@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+  xmlns:xhtml="http://www.w3.org/1999/xhtml">
+  <url>
+    <loc>/tags/go/</loc>
+    <lastmod>2024-05-18T12:47:51+08:00</lastmod>
+  </url><url>
+    <loc>/posts/golang-async-log/</loc>
+    <lastmod>2024-05-18T12:47:51+08:00</lastmod>
+  </url><url>
+    <loc>/</loc>
+    <lastmod>2024-05-18T12:47:51+08:00</lastmod>
+  </url><url>
+    <loc>/posts/</loc>
+    <lastmod>2024-05-18T12:47:51+08:00</lastmod>
+  </url><url>
+    <loc>/tags/</loc>
+    <lastmod>2024-05-18T12:47:51+08:00</lastmod>
+  </url><url>
+    <loc>/tags/%E5%B9%B6%E5%8F%91%E7%BC%96%E7%A8%8B/</loc>
+    <lastmod>2024-05-18T12:47:51+08:00</lastmod>
+  </url><url>
+    <loc>/tags/%E9%97%AE%E9%A2%98%E5%AE%9A%E4%BD%8D/</loc>
+    <lastmod>2024-05-18T12:47:51+08:00</lastmod>
+  </url><url>
+    <loc>/about/</loc>
+  </url><url>
+    <loc>/categories/</loc>
+  </url><url>
+    <loc>/tags/</loc>
+  </url>
+</urlset>
