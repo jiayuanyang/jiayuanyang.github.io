@@ -6,7 +6,632 @@
     <description>Recent content in Posts on jiayuan&#39;s Blog</description>
     <generator>Hugo -- gohugo.io</generator>
     <language>en-us</language>
-    <lastBuildDate>Sat, 18 May 2024 12:47:51 +0800</lastBuildDate><atom:link href="/posts/index.xml" rel="self" type="application/rss+xml" />
+    <lastBuildDate>Mon, 20 May 2024 23:32:13 +0800</lastBuildDate><atom:link href="/posts/index.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>Golang Mutex</title>
+      <link>/posts/golang-mutex/</link>
+      <pubDate>Mon, 20 May 2024 23:32:13 +0800</pubDate>
+      
+      <guid>/posts/golang-mutex/</guid>
+      <description>问题引入 上一篇博客提到IO阻塞，打印log时，时间可能是乱序的
+由此来分析Go中sync.Mutex在不同场景的表现
+测试代码 go1.19，在每分钟0s Write时阻塞3s
+package main import ( &amp;#34;log&amp;#34; &amp;#34;math/rand&amp;#34; &amp;#34;os&amp;#34; &amp;#34;sync/atomic&amp;#34; &amp;#34;time&amp;#34; ) type DelayWriter struct { *os.File } var timeslot [60]int64 func (w *DelayWriter) Write(b []byte) (int, error) { now := time.Now() if now.Second() == 0 &amp;amp;&amp;amp; atomic.AddInt64(&amp;amp;timeslot[now.Minute()], 1) == 1 { time.Sleep(time.Millisecond * 3333) // 每分钟 0s，模拟写日志阻塞 } return w.File.Write(b) } func NewDelayWriter(filename string) *DelayWriter { f, err := os.OpenFile(filename, os.O_CREATE|os.O_RDWR|os.O_APPEND|os.O_TRUNC, 0666) if err != nil { panic(err) } return &amp;amp;DelayWriter{f} } var logger = log.</description>
+      <content>&lt;h1 id=&#34;问题引入&#34;&gt;问题引入&lt;/h1&gt;
+&lt;p&gt;上一篇博客提到IO阻塞，打印log时，时间可能是乱序的&lt;/p&gt;
+&lt;p&gt;由此来分析Go中sync.Mutex在不同场景的表现&lt;/p&gt;
+&lt;p&gt;测试代码 go1.19，在每分钟0s Write时阻塞3s&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;package main
+
+import (
+	&amp;#34;log&amp;#34;
+	&amp;#34;math/rand&amp;#34;
+	&amp;#34;os&amp;#34;
+	&amp;#34;sync/atomic&amp;#34;
+	&amp;#34;time&amp;#34;
+)
+
+type DelayWriter struct {
+	*os.File
+}
+
+var timeslot [60]int64
+
+func (w *DelayWriter) Write(b []byte) (int, error) {
+	now := time.Now()
+	if now.Second() == 0 &amp;amp;&amp;amp; atomic.AddInt64(&amp;amp;timeslot[now.Minute()], 1) == 1 {
+		time.Sleep(time.Millisecond * 3333) // 每分钟 0s，模拟写日志阻塞
+	}
+	return w.File.Write(b)
+}
+
+func NewDelayWriter(filename string) *DelayWriter {
+	f, err := os.OpenFile(filename, os.O_CREATE|os.O_RDWR|os.O_APPEND|os.O_TRUNC, 0666)
+	if err != nil {
+		panic(err)
+	}
+	return &amp;amp;DelayWriter{f}
+}
+
+var logger = log.New(NewDelayWriter(&amp;#34;test.log&amp;#34;), &amp;#34;&amp;#34;, log.LstdFlags|log.Lmicroseconds|log.Lshortfile)
+
+func main() {
+	for i := 0; i &amp;lt; 100; i++ {
+		go func(index int) {
+			var seq int
+			for {
+				seq++
+
+				r := rand.Int31n(1000) + 100
+				time.Sleep(time.Duration(r) * time.Millisecond)
+
+				go serve(index, seq) // 处理请求
+			}
+		}(i)
+	}
+
+	time.Sleep(time.Minute * 2)
+	logger.Println(&amp;#34;end&amp;#34;)
+}
+
+func serve(index int, seq int) {
+	logger.Println(&amp;#34;recv request&amp;#34;, index, seq)
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;运行结果，可以看到在0s附近，时间有递增、递减、反复变化&lt;/p&gt;
+&lt;p&gt;&lt;img src=&#34;/img/golang-mutex-log.jpg&#34; alt=&#34;log&#34;&gt;&lt;/p&gt;
+&lt;h1 id=&#34;syncmutex实现分析&#34;&gt;sync.Mutex实现分析&lt;/h1&gt;
+&lt;p&gt;当前sync.Mutex的实现比较复杂，引入了普通（normal）模式，饥饿（starvation）模式&lt;/p&gt;
+&lt;p&gt;sync.Mutex代码经过了4个版本变化，直接看最新代码较难理解，接下来按照4个版本变化依次介绍&lt;/p&gt;
+&lt;h2 id=&#34;信号量原语&#34;&gt;信号量原语&lt;/h2&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;// Semacquire waits until *s &amp;gt; 0 and then atomically decrements it.
+// It is intended as a simple sleep primitive for use by the synchronization
+// library and should not be used directly.
+func runtime_Semacquire(s *uint32)
+
+// Semrelease atomically increments *s and notifies a waiting goroutine
+// if one is blocked in Semacquire.
+// It is intended as a simple wakeup primitive for use by the synchronization
+// library and should not be used directly.
+func runtime_Semrelease(s *uint32)
+&lt;/code&gt;&lt;/pre&gt;&lt;h2 id=&#34;v1simple-implementation&#34;&gt;V1：Simple implementation.&lt;/h2&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;type Mutex struct {
+    key  int32 // Indication of whether the lock is held
+    sema int32 // Semaphore dedicated to block/wake up goroutine
+}
+
+func (m *Mutex) Lock() {
+    if atomic.AddInt32(&amp;amp;m.key, 1) == 1 {
+        return
+    }
+    semacquire(&amp;amp;m.sema)
+}
+
+func (m *Mutex) Unlock() {
+    if atomic.AddInt32(&amp;amp;m.key, -1) == 0 {
+        return
+    }
+    semrelease(&amp;amp;m.sema)
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;h3 id=&#34;lock&#34;&gt;Lock&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;key原子增加
+&lt;ul&gt;
+&lt;li&gt;新值为1获取到锁；否则：&lt;/li&gt;
+&lt;li&gt;信号量semacquire&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;unlock&#34;&gt;Unlock&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;key原子增加-1
+&lt;ul&gt;
+&lt;li&gt;新值为0，说明没有其他在等待的，直接返回；否则：&lt;/li&gt;
+&lt;li&gt;信号量semrelease，唤醒等待的goroutine&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;举例&#34;&gt;举例&lt;/h3&gt;
+&lt;ol&gt;
+&lt;li&gt;goroutine1（简称g1） Lock&lt;/li&gt;
+&lt;li&gt;g2请求Lock，semacquire&lt;/li&gt;
+&lt;li&gt;g1 Unlock，semrelease，唤醒等待者g2&lt;/li&gt;
+&lt;li&gt;g2进入临界区操作，操作完 再Unlock&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;如果g2 原子incr key，还未调用 semacquire(&amp;amp;m.sema)&lt;/p&gt;
+&lt;p&gt;g1先semrelease(&amp;amp;m.sema)，还能不能唤醒g2？&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;g1 Lock 成功&lt;/li&gt;
+&lt;li&gt;g2 Lock，进程暂停&lt;/li&gt;
+&lt;li&gt;g1 Unlock，semrelease(&amp;amp;m.sema)，此时g1还未休眠，无法唤醒，信号量自增&lt;/li&gt;
+&lt;li&gt;g2 进程继续，semacquire(&amp;amp;m.sema)&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;g2执行semacquire(&amp;amp;m.sema)  后&lt;/p&gt;
+&lt;blockquote&gt;
+&lt;p&gt;Semacquire waits until *s &amp;gt; 0 and then atomically decrements it.&lt;/p&gt;
+&lt;/blockquote&gt;
+&lt;p&gt;还是能够正常执行&lt;/p&gt;
+&lt;h2 id=&#34;v2new-goroutine-participates-in-lock-competition&#34;&gt;V2：New Goroutine participates in lock competition.&lt;/h2&gt;
+&lt;p&gt;信号量先进先出，V1版本如果有goroutine在等待了，新来的&lt;strong&gt;正在&lt;/strong&gt;运行的goroutine也必须等待&lt;/p&gt;
+&lt;p&gt;唤醒老的在睡眠的goroutine，显然开销大于正在运行的goroutine直接获取锁&lt;/p&gt;
+&lt;p&gt;V2版本，允许已经有goroutine睡眠等待时，正在运行的goroutine先获取到锁&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;type Mutex struct {
+   state int32
+   sema  uint32
+}
+
+const (
+   mutexLocked = 1 &amp;lt;&amp;lt; iota // mutex is locked
+   mutexWoken
+   mutexWaiterShift = iota
+)
+&lt;/code&gt;&lt;/pre&gt;&lt;h3 id=&#34;lock-1&#34;&gt;Lock&lt;/h3&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;func (m *Mutex) Lock() {
+   if atomic.CompareAndSwapInt32(&amp;amp;m.state, 0, mutexLocked) {
+      return
+   }
+
+   awoke := false
+   for {
+      old := m.state
+      var new int32
+      if old&amp;amp;mutexLocked == 0 {
+         new = old | mutexLocked
+      } else {
+      	 new = old + 1&amp;lt;&amp;lt;mutexWaiterShift
+      }
+      if awoke {
+         new &amp;amp;^= mutexWoken
+      }
+      if atomic.CompareAndSwapInt32(&amp;amp;m.state, old, new) {
+         if old&amp;amp;mutexLocked == 0 {
+            break
+         }
+         runtime.Semacquire(&amp;amp;m.sema)
+         awoke = true
+      }
+   }
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;ul&gt;
+&lt;li&gt;state cas从0到1成功，直接得到锁； 否则
+&lt;ul&gt;
+&lt;li&gt;for 循环，进行cas操作
+&lt;ul&gt;
+&lt;li&gt;如果当前没有锁标记，加上锁标记&lt;/li&gt;
+&lt;li&gt;有锁标记，增加一个等待计数&lt;/li&gt;
+&lt;li&gt;另外，awoke为true时，清除mutexWoken比特位&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;cas进行更新，更新成功时
+&lt;ul&gt;
+&lt;li&gt;旧值没有锁标记，表示本次cas拿到锁，直接退出；否则&lt;/li&gt;
+&lt;li&gt;Semacquire，进入睡眠等待，等待结束后，awoke置为true&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;unlock-1&#34;&gt;Unlock&lt;/h3&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;func (m *Mutex) Unlock() {
+   new := atomic.AddInt32(&amp;amp;m.state, -mutexLocked)
+
+   old := new
+   for {
+      if old&amp;gt;&amp;gt;mutexWaiterShift == 0 || old&amp;amp;(mutexLocked|mutexWoken) != 0 {
+         return
+      }
+
+      new = (old - 1&amp;lt;&amp;lt;mutexWaiterShift) | mutexWoken
+      if atomic.CompareAndSwapInt32(&amp;amp;m.state, old, new) {
+         runtime.Semrelease(&amp;amp;m.sema)
+         return
+      }
+      old = m.state
+   }
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;ul&gt;
+&lt;li&gt;原子减-1&lt;/li&gt;
+&lt;li&gt;for循环
+&lt;ul&gt;
+&lt;li&gt;如果没有等待者， 或者 有lock/woken标记， 退出；否则&lt;/li&gt;
+&lt;li&gt;cas更新，新值为减去1个等待计数|woken标记
+&lt;ul&gt;
+&lt;li&gt;cas成功，Semrelease唤醒一个等待者&lt;/li&gt;
+&lt;li&gt;cas失败， 继续判断&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;举例-1&#34;&gt;举例&lt;/h3&gt;
+&lt;ol&gt;
+&lt;li&gt;
+&lt;p&gt;g1 Lock&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;g2, g3 请求Lock，进入休眠等待&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;g1 Unlock 和 g4 Lock， g5 Lock几乎同时发生&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;
+&lt;p&gt;第一种情况 g1 Unlock 先完成了原子-1&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;g4, g5看到 old&amp;amp;mutexLocked == 0，都增加locked比特，进行cas更新&lt;/li&gt;
+&lt;li&gt;g4 g5其中一个更新成功， 获取到锁&lt;/li&gt;
+&lt;li&gt;另一个更新失败，再次进入for循环，
+&lt;ol&gt;
+&lt;li&gt;看到  old&amp;amp;mutexLocked != 0， 增加等待计数，cas更新成功后休眠等待&lt;/li&gt;
+&lt;/ol&gt;
+&lt;/li&gt;
+&lt;li&gt;此时g1 进入for循环， 看到已经&lt;strong&gt;有了mutex标记&lt;/strong&gt;，结束Unlock，&lt;strong&gt;不需要再进行唤醒&lt;/strong&gt;&lt;/li&gt;
+&lt;/ol&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;第二种情况 g1 Unlock 先完成了原子-1，并且cas新增woken标记成功&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;g4其中一个获取锁成功，g5获取锁失败，再次进入for循环，&lt;strong&gt;还未进行第二次cas更新&lt;/strong&gt;&lt;/li&gt;
+&lt;li&gt;g4 很快完成操作，调用Unlock&lt;/li&gt;
+&lt;li&gt;此时，g4看到有&lt;strong&gt;woken标记&lt;/strong&gt;，结束Unlock，不需要再进行唤醒
+&lt;ol&gt;
+&lt;li&gt;如果g4第二次cas更新成功，去掉woken标记，此时g4还会进行唤醒&lt;/li&gt;
+&lt;/ol&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h3 id=&#34;问题&#34;&gt;问题&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;为什么要加woken标记&lt;/li&gt;
+&lt;li&gt;CAS会不会有ABA问题？&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h4 id=&#34;问题1为什么要加woken标记&#34;&gt;问题1：为什么要加woken标记&lt;/h4&gt;
+&lt;p&gt;防止惊群，只需要唤醒一个&lt;/p&gt;
+&lt;p&gt;g1 Lock成功&lt;/p&gt;
+&lt;p&gt;g2, g3, g4 请求Lock， 进入睡眠等待&lt;/p&gt;
+&lt;p&gt;g1 Unlock，准备semrelease（还未调用）&lt;/p&gt;
+&lt;p&gt;此时 新来g5 可以Lock成功&lt;/p&gt;
+&lt;p&gt;g5 Unlock，准备semrelease（还未调用）&lt;/p&gt;
+&lt;p&gt;然后 g1, g5 同时semrelease，会唤醒多个在睡眠等待的goroutine&lt;/p&gt;
+&lt;hr&gt;
+&lt;p&gt;加了woken标记，就只会唤醒一个&lt;/p&gt;
+&lt;p&gt;woken的goroutine和新来的（也可能没有新来的）竞争， 失败则再次睡眠&lt;/p&gt;
+&lt;p&gt;被woken的会去掉woken标记进行cas， cas更新成功，都会去掉woken标记，未抢到锁时还会进入睡眠&lt;/p&gt;
+&lt;hr&gt;
+&lt;h4 id=&#34;问题2会不会有aba问题&#34;&gt;问题2：会不会有ABA问题&lt;/h4&gt;
+&lt;p&gt;不会&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;Unlock时， cas什么时候失败？&lt;/li&gt;
+&lt;/ul&gt;
+&lt;ol&gt;
+&lt;li&gt;Unlock 原子-1后，没有lock标记，新来的g先于Unlock的cas加上了lock，cas失败
+&lt;ol&gt;
+&lt;li&gt;此时，在进入判断，会认为有lock标记，退出&lt;/li&gt;
+&lt;/ol&gt;
+&lt;/li&gt;
+&lt;li&gt;和上面类似，Unlock 原子-1后，没有lock标记，新来的g先于Unlock的cas加上了lock，cas失败。但是在Unlock再次判断之前，新来的g调用了Unlock。
+&lt;ol&gt;
+&lt;li&gt;此时有两个g在Unlock&lt;/li&gt;
+&lt;li&gt;两个都判断没有lock标记，假设还有一个等待者， 这是二者都会尝试加上woken标记，并减去1个等待者&lt;/li&gt;
+&lt;li&gt;只有一个添加woken成功，然后唤醒等待者，另一个cas失败，再次判断，由于woken存在或者等待者为0退出&lt;/li&gt;
+&lt;/ol&gt;
+&lt;/li&gt;
+&lt;/ol&gt;
+&lt;ul&gt;
+&lt;li&gt;cas判断，会不会有N次semacquire，但是semrelease小于N?
+&lt;ul&gt;
+&lt;li&gt;不会，有多少次 semacquire， 就有多少次 semrelease&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;v3give-new-goroutines-some-more-chances&#34;&gt;V3：Give new goroutines some more chances.&lt;/h2&gt;
+&lt;p&gt;增加自旋&lt;/p&gt;
+&lt;p&gt;有mutexLocked时，进行有限次数自旋，并尝试cas增加mutexWoken标记&lt;/p&gt;
+&lt;p&gt;整体逻辑和V2类似&lt;/p&gt;
+&lt;h3 id=&#34;lock-2&#34;&gt;Lock&lt;/h3&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;func (m *Mutex) Lock() {
+    // Fast path: grab unlocked mutex.
+    if atomic.CompareAndSwapInt32(&amp;amp;m.state, 0, mutexLocked) {
+        return
+    }
+
+    awoke := false
+    iter := 0
+    for {
+        old := m.state
+        new := old | mutexLocked
+        if old&amp;amp;mutexLocked != 0 {
+            if runtime_canSpin(iter) {
+                if !awoke &amp;amp;&amp;amp; old&amp;amp;mutexWoken == 0 &amp;amp;&amp;amp; old&amp;gt;&amp;gt;mutexWaiterShift != 0 &amp;amp;&amp;amp;
+                    atomic.CompareAndSwapInt32(&amp;amp;m.state, old, old|mutexWoken) {
+                    awoke = true
+                }
+                runtime_doSpin()
+                iter++
+                continue
+            }
+            new = old + 1&amp;lt;&amp;lt;mutexWaiterShift
+        }
+        if awoke {
+            new &amp;amp;^= mutexWoken
+        }
+        if atomic.CompareAndSwapInt32(&amp;amp;m.state, old, new) {
+            if old&amp;amp;mutexLocked == 0 {
+                break
+            }
+            runtime_Semacquire(&amp;amp;m.sema)
+            awoke = true
+            iter = 0
+        }
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;h3 id=&#34;unlock-2&#34;&gt;Unlock&lt;/h3&gt;
+&lt;p&gt;逻辑同V2&lt;/p&gt;
+&lt;h2 id=&#34;v4solve-the-old-goroutine-starvation-problem&#34;&gt;V4：Solve the old goroutine starvation problem.&lt;/h2&gt;
+&lt;p&gt;V3版本新来的goroutine更容易竞争到锁，老的竞争者可能一直得不到锁&lt;/p&gt;
+&lt;p&gt;V4版本解决饥饿问题&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;const (
+    mutexLocked = 1 &amp;lt;&amp;lt; iota // mutex is locked
+    mutexWoken
+    mutexStarving // separate out a starvation token from the state field
+    mutexWaiterShift = iota
+    starvationThresholdNs = 1e6    
+)
+&lt;/code&gt;&lt;/pre&gt;&lt;h3 id=&#34;lock-3&#34;&gt;Lock&lt;/h3&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;func (m *Mutex) Lock() {
+	// Fast path: grab unlocked mutex.
+	if atomic.CompareAndSwapInt32(&amp;amp;m.state, 0, mutexLocked) {
+		return
+	}
+	// Slow path (outlined so that the fast path can be inlined)
+	m.lockSlow()
+}
+
+func (m *Mutex) lockSlow() {
+	var waitStartTime int64
+	starving := false
+	awoke := false
+	iter := 0
+	old := m.state
+	for {
+		// Don&amp;#39;t spin in starvation mode, ownership is handed off to waiters
+		// so we won&amp;#39;t be able to acquire the mutex anyway.
+		if old&amp;amp;(mutexLocked|mutexStarving) == mutexLocked &amp;amp;&amp;amp; runtime_canSpin(iter) {
+			// Active spinning makes sense.
+			// Try to set mutexWoken flag to inform Unlock
+			// to not wake other blocked goroutines.
+			if !awoke &amp;amp;&amp;amp; old&amp;amp;mutexWoken == 0 &amp;amp;&amp;amp; old&amp;gt;&amp;gt;mutexWaiterShift != 0 &amp;amp;&amp;amp;
+				atomic.CompareAndSwapInt32(&amp;amp;m.state, old, old|mutexWoken) {
+				awoke = true
+			}
+			runtime_doSpin()
+			iter++
+			old = m.state
+			continue
+		}
+		new := old
+		// Don&amp;#39;t try to acquire starving mutex, new arriving goroutines must queue.
+		if old&amp;amp;mutexStarving == 0 {
+			new |= mutexLocked
+		}
+		if old&amp;amp;(mutexLocked|mutexStarving) != 0 {
+			new += 1 &amp;lt;&amp;lt; mutexWaiterShift
+		}
+		// The current goroutine switches mutex to starvation mode.
+		// But if the mutex is currently unlocked, don&amp;#39;t do the switch.
+		// Unlock expects that starving mutex has waiters, which will not
+		// be true in this case.
+		if starving &amp;amp;&amp;amp; old&amp;amp;mutexLocked != 0 {
+			new |= mutexStarving
+		}
+		if awoke {
+			// The goroutine has been woken from sleep,
+			// so we need to reset the flag in either case.
+			if new&amp;amp;mutexWoken == 0 {
+				throw(&amp;#34;sync: inconsistent mutex state&amp;#34;)
+			}
+			new &amp;amp;^= mutexWoken
+		}
+		if atomic.CompareAndSwapInt32(&amp;amp;m.state, old, new) {
+			if old&amp;amp;(mutexLocked|mutexStarving) == 0 {
+				break // locked the mutex with CAS
+			}
+			// If we were already waiting before, queue at the front of the queue.
+			queueLifo := waitStartTime != 0
+			if waitStartTime == 0 {
+				waitStartTime = runtime_nanotime()
+			}
+			runtime_SemacquireMutex(&amp;amp;m.sema, queueLifo, 1)
+			starving = starving || runtime_nanotime()-waitStartTime &amp;gt; starvationThresholdNs
+			old = m.state
+			if old&amp;amp;mutexStarving != 0 {
+				// If this goroutine was woken and mutex is in starvation mode,
+				// ownership was handed off to us but mutex is in somewhat
+				// inconsistent state: mutexLocked is not set and we are still
+				// accounted as waiter. Fix that.
+				if old&amp;amp;(mutexLocked|mutexWoken) != 0 || old&amp;gt;&amp;gt;mutexWaiterShift == 0 {
+					throw(&amp;#34;sync: inconsistent mutex state&amp;#34;)
+				}
+				delta := int32(mutexLocked - 1&amp;lt;&amp;lt;mutexWaiterShift)
+				if !starving || old&amp;gt;&amp;gt;mutexWaiterShift == 1 {
+					// Exit starvation mode.
+					// Critical to do it here and consider wait time.
+					// Starvation mode is so inefficient, that two goroutines
+					// can go lock-step infinitely once they switch mutex
+					// to starvation mode.
+					delta -= mutexStarving
+				}
+				atomic.AddInt32(&amp;amp;m.state, delta)
+				break
+			}
+			awoke = true
+			iter = 0
+		} else {
+			old = m.state
+		}
+	}
+
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;h3 id=&#34;unlock-3&#34;&gt;Unlock&lt;/h3&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;func (m *Mutex) Unlock() {
+	// Fast path: drop lock bit.
+	new := atomic.AddInt32(&amp;amp;m.state, -mutexLocked)
+	if new != 0 {
+		// Outlined slow path to allow inlining the fast path.
+		// To hide unlockSlow during tracing we skip one extra frame when tracing GoUnblock.
+		m.unlockSlow(new)
+	}
+}
+
+func (m *Mutex) unlockSlow(new int32) {
+	if new&amp;amp;mutexStarving == 0 {
+		old := new
+		for {
+			// If there are no waiters or a goroutine has already
+			// been woken or grabbed the lock, no need to wake anyone.
+			// In starvation mode ownership is directly handed off from unlocking
+			// goroutine to the next waiter. We are not part of this chain,
+			// since we did not observe mutexStarving when we unlocked the mutex above.
+			// So get off the way.
+			if old&amp;gt;&amp;gt;mutexWaiterShift == 0 || old&amp;amp;(mutexLocked|mutexWoken|mutexStarving) != 0 {
+				return
+			}
+			// Grab the right to wake someone.
+			new = (old - 1&amp;lt;&amp;lt;mutexWaiterShift) | mutexWoken
+			if atomic.CompareAndSwapInt32(&amp;amp;m.state, old, new) {
+				runtime_Semrelease(&amp;amp;m.sema, false, 1)
+				return
+			}
+			old = m.state
+		}
+	} else {
+		// Starving mode: handoff mutex ownership to the next waiter.
+		// Note: mutexLocked is not set, the waiter will set it after wakeup.
+		// But mutex is still considered locked if mutexStarving is set,
+		// so new coming goroutines won&amp;#39;t acquire it.
+		runtime_Semrelease(&amp;amp;m.sema, true, 1)
+	}
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;h2 id=&#34;总结&#34;&gt;总结&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;V1版本：先进先出，新来的goroutine只能排队&lt;/li&gt;
+&lt;li&gt;V2版本：新来的g和被唤醒的g竞争，可能直接拿到锁
+&lt;ul&gt;
+&lt;li&gt;g被唤醒不是直接拿到锁， 与新来的g竞争&lt;/li&gt;
+&lt;li&gt;最多只有一个g被唤醒，被唤醒的g竞争失败，清空woken标记，再次睡眠&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;V3版本：增加自旋逻辑，临界区较少时，自旋一会就能拿到锁，无需进入睡眠
+&lt;ul&gt;
+&lt;li&gt;自旋时会尝试设置woken标记， 通知Unlock无需唤醒其他等待者&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;V4版本：解决饥饿，新增mutexStarving标记位，引入普通/饥饿模式
+&lt;ul&gt;
+&lt;li&gt;普通模式，同上述&lt;/li&gt;
+&lt;li&gt;饥饿模式：
+&lt;ul&gt;
+&lt;li&gt;新来的g，不竞争锁， 在队尾等待&lt;/li&gt;
+&lt;li&gt;被唤醒的g，无需再次竞争，直接得到锁&lt;/li&gt;
+&lt;li&gt;Unlock，不设置woken标记， 直接唤醒&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h1 id=&#34;回到最开始的问题&#34;&gt;回到最开始的问题&lt;/h1&gt;
+&lt;ul&gt;
+&lt;li&gt;为什么日志时间乱序？ mutex是先进先出的吗&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;线上go版本是1.16，是上面V4版本的实现，以测试代码为例&lt;/p&gt;
+&lt;p&gt;在每分钟0s Write时阻塞，此时后续的g，会先进行自旋，然后得不到锁，进入睡眠&lt;/p&gt;
+&lt;p&gt;到这里还都是按照先后顺序的，先进入，先打印，不应该出现时间乱序&lt;/p&gt;
+&lt;p&gt;第一个g，阻塞3s后，Write，然后Unlock&lt;/p&gt;
+&lt;p&gt;如果此时没有新来的g，交给sema第一个等待者，wake后没有竞争直接拿到锁，是不会进入饥饿模式的&lt;/p&gt;
+&lt;p&gt;但是如果有新来的g，Unlock时处于普通模式，新来的g与被唤醒的g竞争&lt;/p&gt;
+&lt;p&gt;1）如果新来的g（g1）竞争到，被唤醒的g0等待了3s，会cas进入饥饿模式。不过，这个cas不一定成功。g1 Unlock时刚好新来g2，仍然可以得到锁。g0会再次cas更新，直到CAS成功，一定能够加上mutexStarving标记&lt;/p&gt;
+&lt;p&gt;如果在CAS中直接获取到锁，会加上starving标记&lt;/p&gt;
+&lt;p&gt;如果在CAS中没有获取到锁，也会加上starving标记，并且加入到sema的队头，仍然符合先进先出的顺序&lt;/p&gt;
+&lt;p&gt;2）如果被唤醒的g竞争到，不会进入饥饿模式，新来的g加到信号量队尾&lt;/p&gt;
+&lt;hr&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;上述分析说明mutex整体上是先进先出的&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;普通模式，新来的g与被唤醒的g竞争，新来的g优势大&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;即使实际已经饥饿，等待时间过长，但是依次唤醒，依次都得到所有权，并不会转变到饥饿模式&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;但是一但没有获取到锁，就会加上starving标记，后续进入饥饿模式&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;饥饿模式时，新来的g直接加入队尾&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;hr&gt;
+&lt;p&gt;那么， 上述日志的时间乱序，另有原因&lt;/p&gt;
+&lt;p&gt;标准库log方法&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;func (l *Logger) Output(calldepth int, s string) error {
+	now := time.Now() // get this early.
+	var file string
+	var line int
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.flag&amp;amp;(Lshortfile|Llongfile) != 0 {
+		// Release lock while getting caller info - it&amp;#39;s expensive.
+		l.mu.Unlock()
+		var ok bool
+		_, file, line, ok = runtime.Caller(calldepth)
+		if !ok {
+			file = &amp;#34;???&amp;#34;
+			line = 0
+		}
+		l.mu.Lock()
+	}
+	l.buf = l.buf[:0]
+	l.formatHeader(&amp;amp;l.buf, now, file, line)
+	l.buf = append(l.buf, s...)
+	if len(s) == 0 || s[len(s)-1] != &amp;#39;\n&amp;#39; {
+		l.buf = append(l.buf, &amp;#39;\n&amp;#39;)
+	}
+	_, err := l.out.Write(l.buf)
+	return err
+}
+&lt;/code&gt;&lt;/pre&gt;&lt;h2 id=&#34;解释现象-个人理解&#34;&gt;解释现象 个人理解&lt;/h2&gt;
+&lt;p&gt;时间是在Lock之前获取，为了获取代码行信息，会先Unlock，得到代码行数后，再Lock&lt;/p&gt;
+&lt;p&gt;日志中时间乱序是因为 Unlock后，runtime.Caller耗时有差异，再次Lock的顺序与获取time.Now顺序不一致&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;图片里第一个03s是因为新来的g先获取到了锁&lt;/li&gt;
+&lt;li&gt;后续进入饥饿模式，时间是按顺序的&lt;/li&gt;
+&lt;li&gt;饥饿模式退出后，有新来的g获取到了锁&lt;/li&gt;
+&lt;/ul&gt;
+&lt;hr&gt;
+&lt;ul&gt;
+&lt;li&gt;去掉 Lshortfile|Llongfile， 再次运行，只会有零星的几个时间乱序，符合上述描述，还未实际进入饥饿模式时，新来的g也能够获取到锁&lt;/li&gt;
+&lt;li&gt;将标准库内 runtime.Caller 注释掉，Lock， 仍然是Unlock， Lock, Unlock的顺序， 有阻塞3s，日志时间是有序的&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;标准库log的优化&#34;&gt;标准库log的优化&lt;/h2&gt;
+&lt;p&gt;go1.21 &lt;a href=&#34;https://github.com/golang/go/commit/c3b4c27fd31b51226274a0c038e9c10a65f11657&#34;&gt;代码&lt;/a&gt; 修改了log实现&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;Performance:
+	name           old time/op  new time/op  delta
+	Concurrent-24  19.9µs ± 2%   8.3µs ± 1%  -58.37%  (p=0.000 n=10+10)
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;不再是每个Log对象用一个buf，使用了[]byte池&lt;/p&gt;
+&lt;p&gt;mutex只锁Write方法，runtime.Caller提前计算&lt;/p&gt;
+&lt;p&gt;用新版本测试，不会再出现时间乱序的问题&lt;/p&gt;
+&lt;h2 id=&#34;futex&#34;&gt;futex&lt;/h2&gt;
+&lt;p&gt;linux用futex实现pthread_mutex_t&lt;/p&gt;
+&lt;p&gt;&lt;a href=&#34;https://man7.org/linux/man-pages/man2/futex.2.html&#34;&gt;futex(2) — Linux manual page&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;与go的实现有何不同&lt;/p&gt;
+&lt;p&gt;后续分析&lt;/p&gt;
+&lt;h1 id=&#34;参考文章&#34;&gt;参考文章&lt;/h1&gt;
+&lt;p&gt;&lt;a href=&#34;https://levelup.gitconnected.com/deep-understanding-of-golang-mutex-9964b02c56e9&#34;&gt;Deep Understanding of Golang Mutex&lt;/a&gt;&lt;/p&gt;
+</content>
+    </item>
+    
     <item>
       <title>Go异步日志实现</title>
       <link>/posts/golang-async-log/</link>
@@ -16,7 +641,7 @@
       <description>一、问题背景 线上某接口偶现pvlost，问题实例物理机所在磁盘都有大量磁盘IO，ioutil持续100%
 二、分析 为什么pvlost？
 header中透传deadline，判断time.Now() &amp;gt; deadline后，直接丢弃请求 框架在收到请求时立即打印一条请求日志 日志库实现类似go标准库的log，使用sync.Mutex保护buf，打印日志被串行化 磁盘IO打满时，log.Info(&amp;ldquo;msg&amp;rdquo;)在Write时可能会阻塞N秒，后续的请求也被阻塞，打印日志后进入 time.Now() &amp;gt; deadline 的判断时，已经超过了deadline，丢弃请求。对外表现为pvlost Write写文件会阻塞？
-文件Write只需要写到内核的cache中，由操作系统负责flush，IO压力大时，cache不足，打印日志会阻塞 线上遇到的case，一般阻塞3秒以下 写日志阻塞有以下解决方式
+文件Write只需要写到内核的cache中，由操作系统负责flush，IO压力大时，cache不足，打印日志会阻塞 线上遇到的case，一般阻塞3秒以下 本次问题是物理机上部署的其他实例大量占用IO 写日志阻塞有以下解决方式
 硬件层面 更换SSD：SSD有着更高的读写性能、更高的IOPS 独立部署：不与其他占用IO大的实例混部 服务层面 打印log不立即Write，将日志写到ctx上下文中（例如ctx提供Info、Error日志方法），回包后再Write，此时阻塞不影响请求 异步日志：日志写到进程缓冲区，异步Write 其实，Write行为可以看作是异步的，内核有page cache，并且会定期flush
 但是内核cache不足时，也是会阻塞
 因此，异步日志本质是在进程内增加cache，不依赖内核的cache
@@ -46,6 +671,7 @@ PS：起初并未怀疑是磁盘IO的问题，物理机有多磁盘，监控上�
 &lt;ul&gt;
 &lt;li&gt;文件Write只需要写到内核的cache中，由操作系统负责flush，IO压力大时，cache不足，打印日志会阻塞&lt;/li&gt;
 &lt;li&gt;线上遇到的case，一般&lt;strong&gt;阻塞3秒以下&lt;/strong&gt;&lt;/li&gt;
+&lt;li&gt;本次问题是物理机上部署的其他实例大量占用IO&lt;/li&gt;
 &lt;/ul&gt;
 &lt;/li&gt;
 &lt;/ul&gt;
@@ -280,6 +906,9 @@ func (wc *AsyncWriteCloser2) Close(b []byte) error {
 &lt;p&gt;这样，服务重启时，就不可避免丢数据&lt;/p&gt;
 &lt;p&gt;一种选择提供Flush方法，收到信号Flush，但Flush后还会有日志，不能完全避免日志不丢失&lt;/p&gt;
 &lt;p&gt;为避免日志丢失，可以提供一个Stop方法（并不只是实现io.WriteCloser了），停止异步写，转变为同步写文件&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;05-21补充&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;上面说的关闭异步log的方法，是需要log库与自定义的异步io.WriteCloser相配合，二者有耦合&lt;/p&gt;
+&lt;p&gt;思考了下，应该在log内实现Stop方法，加锁，调用异步io.WriteCloser的Flush方法，此时可以将log的out切换为原本的file。 解除了二者的耦合！&lt;/p&gt;
 &lt;h3 id=&#34;34-还能做些什么&#34;&gt;3.4 还能做些什么&lt;/h3&gt;
 &lt;p&gt;增加统计信息，例如Write最大耗时，chan最大长度等&lt;/p&gt;
 &lt;h3 id=&#34;35-过程中的一些问题&#34;&gt;3.5 过程中的一些问题&lt;/h3&gt;

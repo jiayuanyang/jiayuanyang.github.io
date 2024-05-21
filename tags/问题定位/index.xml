@@ -16,7 +16,7 @@
       <description>一、问题背景 线上某接口偶现pvlost，问题实例物理机所在磁盘都有大量磁盘IO，ioutil持续100%
 二、分析 为什么pvlost？
 header中透传deadline，判断time.Now() &amp;gt; deadline后，直接丢弃请求 框架在收到请求时立即打印一条请求日志 日志库实现类似go标准库的log，使用sync.Mutex保护buf，打印日志被串行化 磁盘IO打满时，log.Info(&amp;ldquo;msg&amp;rdquo;)在Write时可能会阻塞N秒，后续的请求也被阻塞，打印日志后进入 time.Now() &amp;gt; deadline 的判断时，已经超过了deadline，丢弃请求。对外表现为pvlost Write写文件会阻塞？
-文件Write只需要写到内核的cache中，由操作系统负责flush，IO压力大时，cache不足，打印日志会阻塞 线上遇到的case，一般阻塞3秒以下 写日志阻塞有以下解决方式
+文件Write只需要写到内核的cache中，由操作系统负责flush，IO压力大时，cache不足，打印日志会阻塞 线上遇到的case，一般阻塞3秒以下 本次问题是物理机上部署的其他实例大量占用IO 写日志阻塞有以下解决方式
 硬件层面 更换SSD：SSD有着更高的读写性能、更高的IOPS 独立部署：不与其他占用IO大的实例混部 服务层面 打印log不立即Write，将日志写到ctx上下文中（例如ctx提供Info、Error日志方法），回包后再Write，此时阻塞不影响请求 异步日志：日志写到进程缓冲区，异步Write 其实，Write行为可以看作是异步的，内核有page cache，并且会定期flush
 但是内核cache不足时，也是会阻塞
 因此，异步日志本质是在进程内增加cache，不依赖内核的cache
@@ -46,6 +46,7 @@ PS：起初并未怀疑是磁盘IO的问题，物理机有多磁盘，监控上�
 &lt;ul&gt;
 &lt;li&gt;文件Write只需要写到内核的cache中，由操作系统负责flush，IO压力大时，cache不足，打印日志会阻塞&lt;/li&gt;
 &lt;li&gt;线上遇到的case，一般&lt;strong&gt;阻塞3秒以下&lt;/strong&gt;&lt;/li&gt;
+&lt;li&gt;本次问题是物理机上部署的其他实例大量占用IO&lt;/li&gt;
 &lt;/ul&gt;
 &lt;/li&gt;
 &lt;/ul&gt;
@@ -280,6 +281,9 @@ func (wc *AsyncWriteCloser2) Close(b []byte) error {
 &lt;p&gt;这样，服务重启时，就不可避免丢数据&lt;/p&gt;
 &lt;p&gt;一种选择提供Flush方法，收到信号Flush，但Flush后还会有日志，不能完全避免日志不丢失&lt;/p&gt;
 &lt;p&gt;为避免日志丢失，可以提供一个Stop方法（并不只是实现io.WriteCloser了），停止异步写，转变为同步写文件&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;05-21补充&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;上面说的关闭异步log的方法，是需要log库与自定义的异步io.WriteCloser相配合，二者有耦合&lt;/p&gt;
+&lt;p&gt;思考了下，应该在log内实现Stop方法，加锁，调用异步io.WriteCloser的Flush方法，此时可以将log的out切换为原本的file。 解除了二者的耦合！&lt;/p&gt;
 &lt;h3 id=&#34;34-还能做些什么&#34;&gt;3.4 还能做些什么&lt;/h3&gt;
 &lt;p&gt;增加统计信息，例如Write最大耗时，chan最大长度等&lt;/p&gt;
 &lt;h3 id=&#34;35-过程中的一些问题&#34;&gt;3.5 过程中的一些问题&lt;/h3&gt;
