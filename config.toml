@@ -7,9 +7,9 @@ paginate = 5
   contentTypeName = "posts"
   themeColor = "orange"
   showMenuItems = 2
-  fullWidthTheme = false
+  fullWidthTheme = true
   centerTheme = true
-  showLastUpdated = true
+  showLastUpdated = false
   oneHeadingSize = false
 
 [languages]

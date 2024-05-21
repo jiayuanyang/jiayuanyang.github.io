@@ -21,6 +21,7 @@ description = "线上IO打满，写日志阻塞，上游超时结束。 实现�
 - Write写文件会阻塞？
   - 文件Write只需要写到内核的cache中，由操作系统负责flush，IO压力大时，cache不足，打印日志会阻塞
   - 线上遇到的case，一般**阻塞3秒以下**
+  - 本次问题是物理机上部署的其他实例大量占用IO
 
 
 
@@ -324,6 +325,14 @@ waitLocked时持有mutex，当前chan已满，此时写入cur阻塞，等待cons
 一种选择提供Flush方法，收到信号Flush，但Flush后还会有日志，不能完全避免日志不丢失
 
 为避免日志丢失，可以提供一个Stop方法（并不只是实现io.WriteCloser了），停止异步写，转变为同步写文件
+
+
+
+**05-21补充**
+
+上面说的关闭异步log的方法，是需要log库与自定义的异步io.WriteCloser相配合，二者有耦合
+
+思考了下，应该在log内实现Stop方法，加锁，调用异步io.WriteCloser的Flush方法，此时可以将log的out切换为原本的file。 解除了二者的耦合！
 
 
 
