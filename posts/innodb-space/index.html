@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  
+    <title>InnoDB索引占用空间分析 :: jiayuan&#39;s Blog</title>
+  
+  <meta http-equiv="content-type" content="text/html; charset=utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="索引空间可视化分析，慢查询，索引选择" />
+<meta name="keywords" content="" />
+
+  <meta name="robots" content="noodp" />
+
+<link rel="canonical" href="/posts/innodb-space/" />
+
+
+
+
+
+
+  
+  
+  
+  
+  
+  <link rel="stylesheet" href="/styles.css">
+
+
+
+
+
+
+
+  <link rel="shortcut icon" href="/img/theme-colors/orange.png">
+  <link rel="apple-touch-icon" href="/img/theme-colors/orange.png">
+
+
+
+<meta name="twitter:card" content="summary" />
+
+
+
+<meta property="og:locale" content="en" />
+<meta property="og:type" content="article" />
+<meta property="og:title" content="InnoDB索引占用空间分析">
+<meta property="og:description" content="索引空间可视化分析，慢查询，索引选择" />
+<meta property="og:url" content="/posts/innodb-space/" />
+<meta property="og:site_name" content="jiayuan&#39;s Blog" />
+
+  
+    <meta property="og:image" content="/img/favicon/orange.png">
+  
+
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="627">
+
+
+  <meta property="article:published_time" content="2024-05-27 09:00:00 &#43;0800 &#43;0800" />
+
+
+
+
+
+
+
+
+
+
+
+
+</head>
+<body class="orange">
+
+
+<div class="container full">
+
+  <header class="header">
+  <div class="header__inner">
+    <div class="header__logo">
+      <a href="/">
+  <div class="logo">
+    jiayuan&#39;s Blog
+  </div>
+</a>
+
+    </div>
+    
+      <ul class="menu menu--mobile">
+  <li class="menu__trigger">Menu&nbsp;▾</li>
+  <li>
+    <ul class="menu__dropdown">
+      
+        
+          <li><a href="/about">About</a></li>
+        
+      
+        
+          <li><a href="/tags">Tags</a></li>
+        
+      
+      
+    </ul>
+  </li>
+</ul>
+
+    
+    
+  </div>
+  
+    <nav class="navigation-menu">
+  <ul class="navigation-menu__inner menu--desktop">
+    
+      
+        
+          <li><a href="/about" >About</a></li>
+        
+      
+        
+          <li><a href="/tags" >Tags</a></li>
+        
+      
+      
+    
+  </ul>
+</nav>
+
+  
+</header>
+
+
+  <div class="content">
+    
+<article class="post">
+  <h1 class="post-title">
+    <a href="/posts/innodb-space/">InnoDB索引占用空间分析</a>
+  </h1>
+  <div class="post-meta"><time class="post-date">2024-05-27</time></div>
+
+  
+    <span class="post-tags">
+      
+      #<a href="/tags/mysql/">MySQL</a>&nbsp;
+      
+      #<a href="/tags/%E6%95%B0%E6%8D%AE%E5%BA%93/">数据库</a>&nbsp;
+      
+      #<a href="/tags/%E5%AD%98%E5%82%A8/">存储</a>&nbsp;
+      
+      #<a href="/tags/%E6%85%A2%E6%9F%A5%E8%AF%A2/">慢查询</a>&nbsp;
+      
+    </span>
+  
+  
+
+
+  
+
+  <div class="post-content"><div>
+        <h1 id="背景">背景<a href="#背景" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h1>
+<p>一两年前在申请Redis资源时，预估了N GB，上线后查看监控， 数据占用大于N GB（大很多）</p>
+<p>因此阅读Redis源码，了解到内部一些数据结构的额外开销：dictEntry，robj，sds header，malloc碎片等等</p>
+<p>对于MySQL，一直不确定空间在上有哪些开销</p>
+<h2 id="问题">问题<a href="#问题" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h2>
+<p>新建如下表，插入100W行记录，占用多大空间？</p>
+<pre tabindex="0"><code>create table test (
+    id bigint not null auto_increment,
+    uid bigint not null,
+    status int not null,
+    ctime bigint not null,
+    mtime bigint not null,
+    primary key (id)
+) engine = innodb;
+</code></pre><p>uid、status分别新增索引，会各自增加多大空间？</p>
+<p>主键是bigint，一个page非叶子节点最多多少条记录？ 主键是int，又是多少</p>
+<pre tabindex="0"><code>-- 存储过程插入100W行
+DROP PROCEDURE IF EXISTS insert_batch;
+DELIMITER $$
+CREATE PROCEDURE insert_batch(max_num INT)
+BEGIN
+    DECLARE i INT DEFAULT 0;
+    SET autocommit = 0;
+    REPEAT
+        INSERT INTO test (uid, status, ctime, mtime) VALUES (1, 2, 3, 4);
+        SET i = i + 1;
+        UNTIL i = max_num
+    END REPEAT;
+    COMMIT;
+END$$
+DELIMITER ;
+
+call insert_batch(1000000);
+</code></pre><h2 id="分析工具">分析工具<a href="#分析工具" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h2>
+<p><a href="https://github.com/jeremycole/innodb_ruby">innodb_ruby</a>      <a href="https://blog.jcole.us/innodb/">作者博客</a></p>
+<p>ibd文件分析</p>
+<h1 id="一索引空间占用">一、索引空间占用<a href="#一索引空间占用" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h1>
+<p>不同版本可能会有不同，仅供参考。下面测试使用MySQL 5.7版本</p>
+<h2 id="10-结论">1.0 结论<a href="#10-结论" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h2>
+<h3 id="聚簇索引">聚簇索引<a href="#聚簇索引" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h3>
+<ul>
+<li>叶子节点
+<ul>
+<li>各字段大小 +  18B（record header=5B + roll_ptr=7B + trx_id=6B）</li>
+</ul>
+</li>
+<li>非叶子节点
+<ul>
+<li>主键大小 + 5B(record header) + 4B（指针）</li>
+</ul>
+</li>
+</ul>
+<h3 id="二级索引">二级索引<a href="#二级索引" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h3>
+<ul>
+<li>
+<p>叶子节点</p>
+<ul>
+<li>索引字段大小 + 主键大小 + 5B(record header)</li>
+</ul>
+</li>
+<li>
+<p>非叶子节点</p>
+<ul>
+<li>索引字段大小 + 主键大小  + 5B(record header) + 4B（指针）</li>
+</ul>
+</li>
+<li>
+<p>其他影响因素</p>
+<ul>
+<li>
+<p><a href="https://dev.mysql.com/doc/refman/5.7/en/innodb-parameters.html#sysvar_innodb_fill_factor">innodb_fill_factor</a> page内默认预留1/16空间</p>
+<ul>
+<li>测试验证时，叶子节点有预留，非叶子节点不预留</li>
+</ul>
+</li>
+<li>
+<p>page directory：平均4条record一个slot，每个slot 2B，即1个记录0.5B</p>
+</li>
+<li>
+<p>每个page有128B的元数据开销</p>
+</li>
+<li>
+<p>页内碎片</p>
+</li>
+</ul>
+</li>
+</ul>
+<p><a href="https://blog.jcole.us/innodb/">作者博客</a>里可以找到详细说明</p>
+<h3 id="计算">计算<a href="#计算" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h3>
+<h4 id="聚簇索引-1">聚簇索引<a href="#聚簇索引-1" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h4>
+<ul>
+<li>
+<p>叶子节点</p>
+<ul>
+<li>
+<p>记录大小 54B：各个字段占用 8(id)+8(uid)+8(ctime)+8(ctime)+4(status) = 36B + 额外开销18B=54B</p>
+</li>
+<li>
+<p>一页最多记录数：(16384 -128)*15/16 / 54.5 = 279.6330</p>
+</li>
+</ul>
+</li>
+<li>
+<p>非叶子节点</p>
+<ul>
+<li>记录大小： 8+5+4 = 17B</li>
+<li>一页最多记录数：(16384 -128) / 17.5 = 928.9143</li>
+</ul>
+</li>
+</ul>
+<h4 id="二级索引-idx_status为例">二级索引 idx_status为例<a href="#二级索引-idx_status为例" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h4>
+<ul>
+<li>叶子节点
+<ul>
+<li>记录大小：4+8+5 = 17</li>
+<li>一页最多记录数：(16384 -128)*15/16 / 17.5 = 870.8571</li>
+</ul>
+</li>
+<li>非叶子节点
+<ul>
+<li>记录大小：4+8+5+4 = 21</li>
+<li>一页最多记录数：(16384 -128) / 21.5 = 756.0930</li>
+</ul>
+</li>
+</ul>
+<p>下面使用innodb_space分析验证</p>
+<h2 id="11-聚簇索引-叶子节点">1.1 聚簇索引 叶子节点<a href="#11-聚簇索引-叶子节点" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h2>
+<h3 id="叶子节点使用page数量--3585">叶子节点使用page数量 = 3585<a href="#叶子节点使用page数量--3585" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h3>
+<p><img src="/img/image-20240522232345900.png" alt="image-20240522232345900"></p>
+<p>这里只分析INDEX页</p>
+<p>ALLOCATED也会占用ibd空间，具体规则未深入研究</p>
+<p>space-indexes显示 ibd文件中，叶子节点使用了3585个page (每个page 16KB)</p>
+<h3 id="叶子节点的记录数是1392042793583">叶子节点的记录数是139+204+279*3583<a href="#叶子节点的记录数是1392042793583" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h3>
+<p><img src="/img/image-20240523001012100.png" alt="image-20240523001012100"></p>
+<p>index-level-summary   -l 表示第几层 -l 0为叶子节点</p>
+<p>page4 139条记录，page3616 204条记录，剩余3583个page都是279条记录，139+204+279 * 3583 = 100W</p>
+<p>一页最多279个记录，符合计算</p>
+<p>page5， data=15066, records=279 15066/279=54，符合计算</p>
+<p>free=1050 表示每页有1050剩余空间</p>
+<p>1050/16384 = 0.0641 与 innodb_fill_factor 1/16=0.0625接近</p>
+<h3 id="每页的占用">每页的占用<a href="#每页的占用" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h3>
+<p><img src="/img/image-20240522234350316.png" alt="image-20240522234350316"></p>
+<p>128B(页的结构信息) + 54 * 279（每条记录大小） * 140 (page directory开销) + 1050 (空闲) = 16384</p>
+<p>一字节不差</p>
+<h3 id="page-directory-为什么是140字节">page directory 为什么是140字节<a href="#page-directory-为什么是140字节" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h3>
+<p>每个slot 2B</p>
+<p>279 / 4 = 69.75，是向上进到70的吗？</p>
+<p><img src="/img/image-20240522235107637.png" alt="image-20240522235107637"></p>
+<p>分析page5的page directory</p>
+<p>可见并不是进上去的，确实有70个slot，其中infimum的owned固定为1 只包含自身，supremum为8，除自身外还有7个   4*68 + 7 = 279 刚好</p>
+<h2 id="12-聚簇索引-非叶子节点">1.2 聚簇索引 非叶子节点<a href="#12-聚簇索引-非叶子节点" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h2>
+<p><img src="/img/image-20240523001846807.png" alt="image-20240523001846807"></p>
+<p>-l 1可以看到，每页最多928个记录，符合计算</p>
+<p>15776/928 = 17，记录大小符合</p>
+<h2 id="13-二级索引-叶子节点">1.3 二级索引 叶子节点<a href="#13-二级索引-叶子节点" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h2>
+<p>添加索引 alter table test add index idx_uid (uid);</p>
+<p><img src="/img/image-20240523002302195.png" alt="image-20240523002302195"></p>
+<p>再添加一个索引  alter table test add index idx_status (status);</p>
+<p><img src="/img/image-20240523002320724.png" alt="image-20240523002320724"></p>
+<p>idx_uid叶子大小应该为 8+8+5 = 21B</p>
+<p>idx_status叶子节点大小应该为 4+8+5=17B</p>
+<p><img src="/img/image-20240523002706499.png" alt="image-20240523002706499"></p>
+<p>idx_status举例</p>
+<p>一页最多928个记录，符合计算</p>
+<p>15776/928 = 17，符合计算</p>
+<p>用叶子节点used进行校验</p>
+<p>idx_uid.used/idx_status.used = 1325 / 1078 = 1.2291</p>
+<p>21/17 = 1.2353 接近</p>
+<h2 id="14-二级索引-非叶子节点">1.4 二级索引 非叶子节点<a href="#14-二级索引-非叶子节点" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h2>
+<p>idx_status非叶子节点大小  4+8+5+4 = 21</p>
+<p>用-l 1的数据计算</p>
+<p>上面计算出最大记录数是756.0930，这里是755</p>
+<p>15855/755=21 符合计算</p>
+<h2 id="15-总结">1.5 总结<a href="#15-总结" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h2>
+<h3 id="聚簇索引-2">聚簇索引<a href="#聚簇索引-2" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h3>
+<p>叶子节点除了各字段外，还有roll_ptr，trx_id</p>
+<h3 id="二级索引-1">二级索引<a href="#二级索引-1" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h3>
+<p>叶子节点没有roll_ptr，没有trx_id</p>
+<p>叶子节点有主键id</p>
+<p>非叶子节点也有主键id</p>
+<p>ps：二级索引上没有roll_ptr、trx_id，MVCC可见性如何判断？</p>
+<h3 id="不同主键大小非叶子节点一页最多存多少">不同主键大小，非叶子节点一页最多存多少？<a href="#不同主键大小非叶子节点一页最多存多少" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h3>
+<ul>
+<li>bigint
+<ul>
+<li>非叶子节点最多928.8 = (16384-128) /(8+5+4+0.5)</li>
+<li>实际验证是928</li>
+</ul>
+</li>
+<li>int
+<ul>
+<li>非叶子节点最多1204.0 = (16384-128) /(8+5+4+0.5)</li>
+<li>实际验证不是1204， 是1203
+<ul>
+<li>与上面 计算得到756.0930，实际755类似， 实际上是能够再存一个记录，但是剩下一个空位</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+<h1 id="二一些常见问题">二、一些常见问题<a href="#二一些常见问题" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h1>
+<ul>
+<li>为什么表不要超过千万行
+<ul>
+<li>bigint主键， 假设记录1k，叶子节点大概存15个
+<ul>
+<li>两层非叶子节点928^2 = 861184 = 86.1W ，三层记录数1300W</li>
+<li>三层非叶子节点928^3=799178752  7.99亿 四层记录数 120亿</li>
+</ul>
+</li>
+<li>三层时，前2层非叶子节点基本可以全缓存在内存，占用(928+1)*16K = 232.25MB
+<ul>
+<li>增删改查仅需要访问一次磁盘</li>
+</ul>
+</li>
+<li>四层时，不可能完全缓存前3层非叶子节点，需要访问2次磁盘</li>
+</ul>
+</li>
+<li>为什么索引快
+<ul>
+<li>主键上字段很多，数据量大</li>
+<li>二级索引数据量小</li>
+<li>回表成本很高</li>
+</ul>
+</li>
+<li>分表分多少合适，以uid mod分表数为例
+<ul>
+<li>首先，一定不是越多越好，分65536个，16384个表显然不合适</li>
+<li>bigint主键， 完全缓存前两层非叶子节点占用14.5MB</li>
+<li>如果所有uid都是均匀访问
+<ul>
+<li>分1024个表，前两层全在内存，占用14.5G，基本能够容纳</li>
+<li>分2048个表，想要全缓存前两层，需要29G内存， 比较大</li>
+</ul>
+</li>
+<li>压测、实践验证为准</li>
+</ul>
+</li>
+</ul>
+<h1 id="三遇到的慢查询分析">三、遇到的慢查询分析<a href="#三遇到的慢查询分析" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h1>
+<p>explain</p>
+<h2 id="31-varchar字段-like-xxx-不走索引">3.1 varchar字段 like %xxx% 不走索引<a href="#31-varchar字段-like-xxx-不走索引" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h2>
+<p>select * from t where country like&rsquo;%US%&rsquo; ; 用不了country索引</p>
+<p>只能全表扫描</p>
+<p>全表扫描一定比用索引快吗？</p>
+<p>如果满足where的行比较少，只有少数回表，走索引会更快</p>
+<p>force index (idx_country)， 是无法用上country索引的</p>
+<p>需要使用子查询才能走country索引</p>
+<p>select * from t where id in(select id from t where country like &lsquo;%US%&rsquo;)</p>
+<p>子查询里可以用到idx_country索引，只查id，不会走全表扫描</p>
+<p>（这个场景后续改用了ES做查询）</p>
+<h2 id="32-覆盖索引">3.2 覆盖索引<a href="#32-覆盖索引" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h2>
+<p>select count(*) from t where uid = 123 and status =  1; (uid有索引，(uid, status)没有索引)</p>
+<p>大部分情况会用上uid索引，再回表判断status</p>
+<p>有些uid数据较多，会走全表扫描</p>
+<p>创建(uid, status)覆盖索引， 避免回表，就会选择索引了</p>
+<p>覆盖索引，有时，仅仅为了覆盖，将原来多字段的聚簇索引抽出部分字段，组成一个“窄“表，加快查询</p>
+<p>实际上就是空间换时间的体现</p>
+<h2 id="34-避免选择错误索引">3.4 避免选择错误索引<a href="#34-避免选择错误索引" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h2>
+<p>select where uid = 123 order by ctime limit 10;</p>
+<p>uid有索引，ctime有索引</p>
+<p>我们更希望选择uid索引，但由于order by ctime，优化器有时会选择ctime</p>
+<p>除了force index，还可以修改sql，order by (ctime + 0) 或者 order by ctime asc,  id desc (ctime asc, id asc 可以用索引)</p>
+<h2 id="35-深翻页">3.5 深翻页<a href="#35-深翻页" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h2>
+<p>翻页时offset过大， 查询会变慢</p>
+<p>因为被翻页的记录也都要回表</p>
+<p>一种方法是不用offset，每次带上上次的id，where id &gt; lastid 来查询</p>
+<p>另外也可以用子查询，先查出id，再用id来查</p>
+<h2 id="36-离线worker扫表">3.6 离线worker扫表<a href="#36-离线worker扫表" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h2>
+<p>需求是扫描ctime再(111, 999)范围，status是unpay的订单</p>
+<p>select * from order_info where ctime &gt; 111 and ctime &lt; 999 and status = &lsquo;unpay&rsquo; and id &gt; $lastID order by id asc limit 1;</p>
+<p>走了id索引，但是用主键扫描，首次定位第一个id，耗时较长</p>
+<p>方法1：先用ctime索引，查出最大最小id  select min(id), max(id) from order_info where xxx</p>
+<p>方法2：直接使用ctime索引，再回表，select * from order_info where (ctime = $lastTime and id &gt; $lastID) or ctime &gt; lastTime</p>
+
+      </div></div>
+
+  
+    
+<div class="pagination">
+    <div class="pagination__title">
+        <span class="pagination__title-h">Read other posts</span>
+        <hr />
+    </div>
+    <div class="pagination__buttons">
+        
+        
+        <span class="button next">
+            <a href="/posts/golang-mutex/">
+                <span class="button__text">Golang Mutex</span>
+                <span class="button__icon">→</span>
+            </a>
+        </span>
+        
+    </div>
+</div>
+
+  
+
+  
+    
+
+  
+</article>
+
+  </div>
+
+  
+    <footer class="footer">
+  <div class="footer__inner">
+    
+      <div class="copyright">
+        <span>© 2024 Powered by <a href="https://gohugo.io">Hugo</a></span>
+    
+      <span>:: <a href="https://github.com/panr/hugo-theme-terminal" target="_blank">Theme</a> made by <a href="https://github.com/panr" target="_blank">panr</a></span>
+      </div>
+  </div>
+</footer>
+
+
+
+
+
+
+<script type="text/javascript" src="/bundle.min.js"></script>
+
+
+
+
+
+  
+</div>
+
+</body>
+</html>

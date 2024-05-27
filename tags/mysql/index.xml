@@ -1,0 +1,301 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>MySQL on jiayuan&#39;s Blog</title>
+    <link>/tags/mysql/</link>
+    <description>Recent content in MySQL on jiayuan&#39;s Blog</description>
+    <generator>Hugo -- gohugo.io</generator>
+    <language>en-us</language>
+    <lastBuildDate>Mon, 27 May 2024 09:00:00 +0800</lastBuildDate><atom:link href="/tags/mysql/index.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>InnoDB索引占用空间分析</title>
+      <link>/posts/innodb-space/</link>
+      <pubDate>Mon, 27 May 2024 09:00:00 +0800</pubDate>
+      
+      <guid>/posts/innodb-space/</guid>
+      <description>背景 一两年前在申请Redis资源时，预估了N GB，上线后查看监控， 数据占用大于N GB（大很多）
+因此阅读Redis源码，了解到内部一些数据结构的额外开销：dictEntry，robj，sds header，malloc碎片等等
+对于MySQL，一直不确定空间在上有哪些开销
+问题 新建如下表，插入100W行记录，占用多大空间？
+create table test ( id bigint not null auto_increment, uid bigint not null, status int not null, ctime bigint not null, mtime bigint not null, primary key (id) ) engine = innodb; uid、status分别新增索引，会各自增加多大空间？
+主键是bigint，一个page非叶子节点最多多少条记录？ 主键是int，又是多少
+-- 存储过程插入100W行 DROP PROCEDURE IF EXISTS insert_batch; DELIMITER $$ CREATE PROCEDURE insert_batch(max_num INT) BEGIN DECLARE i INT DEFAULT 0; SET autocommit = 0; REPEAT INSERT INTO test (uid, status, ctime, mtime) VALUES (1, 2, 3, 4); SET i = i + 1; UNTIL i = max_num END REPEAT; COMMIT; END$$ DELIMITER ; call insert_batch(1000000); 分析工具 innodb_ruby 作者博客</description>
+      <content>&lt;h1 id=&#34;背景&#34;&gt;背景&lt;/h1&gt;
+&lt;p&gt;一两年前在申请Redis资源时，预估了N GB，上线后查看监控， 数据占用大于N GB（大很多）&lt;/p&gt;
+&lt;p&gt;因此阅读Redis源码，了解到内部一些数据结构的额外开销：dictEntry，robj，sds header，malloc碎片等等&lt;/p&gt;
+&lt;p&gt;对于MySQL，一直不确定空间在上有哪些开销&lt;/p&gt;
+&lt;h2 id=&#34;问题&#34;&gt;问题&lt;/h2&gt;
+&lt;p&gt;新建如下表，插入100W行记录，占用多大空间？&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;create table test (
+    id bigint not null auto_increment,
+    uid bigint not null,
+    status int not null,
+    ctime bigint not null,
+    mtime bigint not null,
+    primary key (id)
+) engine = innodb;
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;uid、status分别新增索引，会各自增加多大空间？&lt;/p&gt;
+&lt;p&gt;主键是bigint，一个page非叶子节点最多多少条记录？ 主键是int，又是多少&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;-- 存储过程插入100W行
+DROP PROCEDURE IF EXISTS insert_batch;
+DELIMITER $$
+CREATE PROCEDURE insert_batch(max_num INT)
+BEGIN
+    DECLARE i INT DEFAULT 0;
+    SET autocommit = 0;
+    REPEAT
+        INSERT INTO test (uid, status, ctime, mtime) VALUES (1, 2, 3, 4);
+        SET i = i + 1;
+        UNTIL i = max_num
+    END REPEAT;
+    COMMIT;
+END$$
+DELIMITER ;
+
+call insert_batch(1000000);
+&lt;/code&gt;&lt;/pre&gt;&lt;h2 id=&#34;分析工具&#34;&gt;分析工具&lt;/h2&gt;
+&lt;p&gt;&lt;a href=&#34;https://github.com/jeremycole/innodb_ruby&#34;&gt;innodb_ruby&lt;/a&gt;      &lt;a href=&#34;https://blog.jcole.us/innodb/&#34;&gt;作者博客&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;ibd文件分析&lt;/p&gt;
+&lt;h1 id=&#34;一索引空间占用&#34;&gt;一、索引空间占用&lt;/h1&gt;
+&lt;p&gt;不同版本可能会有不同，仅供参考。下面测试使用MySQL 5.7版本&lt;/p&gt;
+&lt;h2 id=&#34;10-结论&#34;&gt;1.0 结论&lt;/h2&gt;
+&lt;h3 id=&#34;聚簇索引&#34;&gt;聚簇索引&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;叶子节点
+&lt;ul&gt;
+&lt;li&gt;各字段大小 +  18B（record header=5B + roll_ptr=7B + trx_id=6B）&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;非叶子节点
+&lt;ul&gt;
+&lt;li&gt;主键大小 + 5B(record header) + 4B（指针）&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h3 id=&#34;二级索引&#34;&gt;二级索引&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;叶子节点&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;索引字段大小 + 主键大小 + 5B(record header)&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;非叶子节点&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;索引字段大小 + 主键大小  + 5B(record header) + 4B（指针）&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;其他影响因素&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;&lt;a href=&#34;https://dev.mysql.com/doc/refman/5.7/en/innodb-parameters.html#sysvar_innodb_fill_factor&#34;&gt;innodb_fill_factor&lt;/a&gt; page内默认预留1/16空间&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;测试验证时，叶子节点有预留，非叶子节点不预留&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;page directory：平均4条record一个slot，每个slot 2B，即1个记录0.5B&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;每个page有128B的元数据开销&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;页内碎片&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;&lt;a href=&#34;https://blog.jcole.us/innodb/&#34;&gt;作者博客&lt;/a&gt;里可以找到详细说明&lt;/p&gt;
+&lt;h3 id=&#34;计算&#34;&gt;计算&lt;/h3&gt;
+&lt;h4 id=&#34;聚簇索引-1&#34;&gt;聚簇索引&lt;/h4&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;叶子节点&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;记录大小 54B：各个字段占用 8(id)+8(uid)+8(ctime)+8(ctime)+4(status) = 36B + 额外开销18B=54B&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;一页最多记录数：(16384 -128)*15/16 / 54.5 = 279.6330&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;非叶子节点&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;记录大小： 8+5+4 = 17B&lt;/li&gt;
+&lt;li&gt;一页最多记录数：(16384 -128) / 17.5 = 928.9143&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h4 id=&#34;二级索引-idx_status为例&#34;&gt;二级索引 idx_status为例&lt;/h4&gt;
+&lt;ul&gt;
+&lt;li&gt;叶子节点
+&lt;ul&gt;
+&lt;li&gt;记录大小：4+8+5 = 17&lt;/li&gt;
+&lt;li&gt;一页最多记录数：(16384 -128)*15/16 / 17.5 = 870.8571&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;非叶子节点
+&lt;ul&gt;
+&lt;li&gt;记录大小：4+8+5+4 = 21&lt;/li&gt;
+&lt;li&gt;一页最多记录数：(16384 -128) / 21.5 = 756.0930&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;下面使用innodb_space分析验证&lt;/p&gt;
+&lt;h2 id=&#34;11-聚簇索引-叶子节点&#34;&gt;1.1 聚簇索引 叶子节点&lt;/h2&gt;
+&lt;h3 id=&#34;叶子节点使用page数量--3585&#34;&gt;叶子节点使用page数量 = 3585&lt;/h3&gt;
+&lt;p&gt;&lt;img src=&#34;/img/image-20240522232345900.png&#34; alt=&#34;image-20240522232345900&#34;&gt;&lt;/p&gt;
+&lt;p&gt;这里只分析INDEX页&lt;/p&gt;
+&lt;p&gt;ALLOCATED也会占用ibd空间，具体规则未深入研究&lt;/p&gt;
+&lt;p&gt;space-indexes显示 ibd文件中，叶子节点使用了3585个page (每个page 16KB)&lt;/p&gt;
+&lt;h3 id=&#34;叶子节点的记录数是1392042793583&#34;&gt;叶子节点的记录数是139+204+279*3583&lt;/h3&gt;
+&lt;p&gt;&lt;img src=&#34;/img/image-20240523001012100.png&#34; alt=&#34;image-20240523001012100&#34;&gt;&lt;/p&gt;
+&lt;p&gt;index-level-summary   -l 表示第几层 -l 0为叶子节点&lt;/p&gt;
+&lt;p&gt;page4 139条记录，page3616 204条记录，剩余3583个page都是279条记录，139+204+279 * 3583 = 100W&lt;/p&gt;
+&lt;p&gt;一页最多279个记录，符合计算&lt;/p&gt;
+&lt;p&gt;page5， data=15066, records=279 15066/279=54，符合计算&lt;/p&gt;
+&lt;p&gt;free=1050 表示每页有1050剩余空间&lt;/p&gt;
+&lt;p&gt;1050/16384 = 0.0641 与 innodb_fill_factor 1/16=0.0625接近&lt;/p&gt;
+&lt;h3 id=&#34;每页的占用&#34;&gt;每页的占用&lt;/h3&gt;
+&lt;p&gt;&lt;img src=&#34;/img/image-20240522234350316.png&#34; alt=&#34;image-20240522234350316&#34;&gt;&lt;/p&gt;
+&lt;p&gt;128B(页的结构信息) + 54 * 279（每条记录大小） * 140 (page directory开销) + 1050 (空闲) = 16384&lt;/p&gt;
+&lt;p&gt;一字节不差&lt;/p&gt;
+&lt;h3 id=&#34;page-directory-为什么是140字节&#34;&gt;page directory 为什么是140字节&lt;/h3&gt;
+&lt;p&gt;每个slot 2B&lt;/p&gt;
+&lt;p&gt;279 / 4 = 69.75，是向上进到70的吗？&lt;/p&gt;
+&lt;p&gt;&lt;img src=&#34;/img/image-20240522235107637.png&#34; alt=&#34;image-20240522235107637&#34;&gt;&lt;/p&gt;
+&lt;p&gt;分析page5的page directory&lt;/p&gt;
+&lt;p&gt;可见并不是进上去的，确实有70个slot，其中infimum的owned固定为1 只包含自身，supremum为8，除自身外还有7个   4*68 + 7 = 279 刚好&lt;/p&gt;
+&lt;h2 id=&#34;12-聚簇索引-非叶子节点&#34;&gt;1.2 聚簇索引 非叶子节点&lt;/h2&gt;
+&lt;p&gt;&lt;img src=&#34;/img/image-20240523001846807.png&#34; alt=&#34;image-20240523001846807&#34;&gt;&lt;/p&gt;
+&lt;p&gt;-l 1可以看到，每页最多928个记录，符合计算&lt;/p&gt;
+&lt;p&gt;15776/928 = 17，记录大小符合&lt;/p&gt;
+&lt;h2 id=&#34;13-二级索引-叶子节点&#34;&gt;1.3 二级索引 叶子节点&lt;/h2&gt;
+&lt;p&gt;添加索引 alter table test add index idx_uid (uid);&lt;/p&gt;
+&lt;p&gt;&lt;img src=&#34;/img/image-20240523002302195.png&#34; alt=&#34;image-20240523002302195&#34;&gt;&lt;/p&gt;
+&lt;p&gt;再添加一个索引  alter table test add index idx_status (status);&lt;/p&gt;
+&lt;p&gt;&lt;img src=&#34;/img/image-20240523002320724.png&#34; alt=&#34;image-20240523002320724&#34;&gt;&lt;/p&gt;
+&lt;p&gt;idx_uid叶子大小应该为 8+8+5 = 21B&lt;/p&gt;
+&lt;p&gt;idx_status叶子节点大小应该为 4+8+5=17B&lt;/p&gt;
+&lt;p&gt;&lt;img src=&#34;/img/image-20240523002706499.png&#34; alt=&#34;image-20240523002706499&#34;&gt;&lt;/p&gt;
+&lt;p&gt;idx_status举例&lt;/p&gt;
+&lt;p&gt;一页最多928个记录，符合计算&lt;/p&gt;
+&lt;p&gt;15776/928 = 17，符合计算&lt;/p&gt;
+&lt;p&gt;用叶子节点used进行校验&lt;/p&gt;
+&lt;p&gt;idx_uid.used/idx_status.used = 1325 / 1078 = 1.2291&lt;/p&gt;
+&lt;p&gt;21/17 = 1.2353 接近&lt;/p&gt;
+&lt;h2 id=&#34;14-二级索引-非叶子节点&#34;&gt;1.4 二级索引 非叶子节点&lt;/h2&gt;
+&lt;p&gt;idx_status非叶子节点大小  4+8+5+4 = 21&lt;/p&gt;
+&lt;p&gt;用-l 1的数据计算&lt;/p&gt;
+&lt;p&gt;上面计算出最大记录数是756.0930，这里是755&lt;/p&gt;
+&lt;p&gt;15855/755=21 符合计算&lt;/p&gt;
+&lt;h2 id=&#34;15-总结&#34;&gt;1.5 总结&lt;/h2&gt;
+&lt;h3 id=&#34;聚簇索引-2&#34;&gt;聚簇索引&lt;/h3&gt;
+&lt;p&gt;叶子节点除了各字段外，还有roll_ptr，trx_id&lt;/p&gt;
+&lt;h3 id=&#34;二级索引-1&#34;&gt;二级索引&lt;/h3&gt;
+&lt;p&gt;叶子节点没有roll_ptr，没有trx_id&lt;/p&gt;
+&lt;p&gt;叶子节点有主键id&lt;/p&gt;
+&lt;p&gt;非叶子节点也有主键id&lt;/p&gt;
+&lt;p&gt;ps：二级索引上没有roll_ptr、trx_id，MVCC可见性如何判断？&lt;/p&gt;
+&lt;h3 id=&#34;不同主键大小非叶子节点一页最多存多少&#34;&gt;不同主键大小，非叶子节点一页最多存多少？&lt;/h3&gt;
+&lt;ul&gt;
+&lt;li&gt;bigint
+&lt;ul&gt;
+&lt;li&gt;非叶子节点最多928.8 = (16384-128) /(8+5+4+0.5)&lt;/li&gt;
+&lt;li&gt;实际验证是928&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;int
+&lt;ul&gt;
+&lt;li&gt;非叶子节点最多1204.0 = (16384-128) /(8+5+4+0.5)&lt;/li&gt;
+&lt;li&gt;实际验证不是1204， 是1203
+&lt;ul&gt;
+&lt;li&gt;与上面 计算得到756.0930，实际755类似， 实际上是能够再存一个记录，但是剩下一个空位&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h1 id=&#34;二一些常见问题&#34;&gt;二、一些常见问题&lt;/h1&gt;
+&lt;ul&gt;
+&lt;li&gt;为什么表不要超过千万行
+&lt;ul&gt;
+&lt;li&gt;bigint主键， 假设记录1k，叶子节点大概存15个
+&lt;ul&gt;
+&lt;li&gt;两层非叶子节点928^2 = 861184 = 86.1W ，三层记录数1300W&lt;/li&gt;
+&lt;li&gt;三层非叶子节点928^3=799178752  7.99亿 四层记录数 120亿&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;三层时，前2层非叶子节点基本可以全缓存在内存，占用(928+1)*16K = 232.25MB
+&lt;ul&gt;
+&lt;li&gt;增删改查仅需要访问一次磁盘&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;四层时，不可能完全缓存前3层非叶子节点，需要访问2次磁盘&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;为什么索引快
+&lt;ul&gt;
+&lt;li&gt;主键上字段很多，数据量大&lt;/li&gt;
+&lt;li&gt;二级索引数据量小&lt;/li&gt;
+&lt;li&gt;回表成本很高&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;分表分多少合适，以uid mod分表数为例
+&lt;ul&gt;
+&lt;li&gt;首先，一定不是越多越好，分65536个，16384个表显然不合适&lt;/li&gt;
+&lt;li&gt;bigint主键， 完全缓存前两层非叶子节点占用14.5MB&lt;/li&gt;
+&lt;li&gt;如果所有uid都是均匀访问
+&lt;ul&gt;
+&lt;li&gt;分1024个表，前两层全在内存，占用14.5G，基本能够容纳&lt;/li&gt;
+&lt;li&gt;分2048个表，想要全缓存前两层，需要29G内存， 比较大&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;li&gt;压测、实践验证为准&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h1 id=&#34;三遇到的慢查询分析&#34;&gt;三、遇到的慢查询分析&lt;/h1&gt;
+&lt;p&gt;explain&lt;/p&gt;
+&lt;h2 id=&#34;31-varchar字段-like-xxx-不走索引&#34;&gt;3.1 varchar字段 like %xxx% 不走索引&lt;/h2&gt;
+&lt;p&gt;select * from t where country like&amp;rsquo;%US%&amp;rsquo; ; 用不了country索引&lt;/p&gt;
+&lt;p&gt;只能全表扫描&lt;/p&gt;
+&lt;p&gt;全表扫描一定比用索引快吗？&lt;/p&gt;
+&lt;p&gt;如果满足where的行比较少，只有少数回表，走索引会更快&lt;/p&gt;
+&lt;p&gt;force index (idx_country)， 是无法用上country索引的&lt;/p&gt;
+&lt;p&gt;需要使用子查询才能走country索引&lt;/p&gt;
+&lt;p&gt;select * from t where id in(select id from t where country like &amp;lsquo;%US%&amp;rsquo;)&lt;/p&gt;
+&lt;p&gt;子查询里可以用到idx_country索引，只查id，不会走全表扫描&lt;/p&gt;
+&lt;p&gt;（这个场景后续改用了ES做查询）&lt;/p&gt;
+&lt;h2 id=&#34;32-覆盖索引&#34;&gt;3.2 覆盖索引&lt;/h2&gt;
+&lt;p&gt;select count(*) from t where uid = 123 and status =  1; (uid有索引，(uid, status)没有索引)&lt;/p&gt;
+&lt;p&gt;大部分情况会用上uid索引，再回表判断status&lt;/p&gt;
+&lt;p&gt;有些uid数据较多，会走全表扫描&lt;/p&gt;
+&lt;p&gt;创建(uid, status)覆盖索引， 避免回表，就会选择索引了&lt;/p&gt;
+&lt;p&gt;覆盖索引，有时，仅仅为了覆盖，将原来多字段的聚簇索引抽出部分字段，组成一个“窄“表，加快查询&lt;/p&gt;
+&lt;p&gt;实际上就是空间换时间的体现&lt;/p&gt;
+&lt;h2 id=&#34;34-避免选择错误索引&#34;&gt;3.4 避免选择错误索引&lt;/h2&gt;
+&lt;p&gt;select where uid = 123 order by ctime limit 10;&lt;/p&gt;
+&lt;p&gt;uid有索引，ctime有索引&lt;/p&gt;
+&lt;p&gt;我们更希望选择uid索引，但由于order by ctime，优化器有时会选择ctime&lt;/p&gt;
+&lt;p&gt;除了force index，还可以修改sql，order by (ctime + 0) 或者 order by ctime asc,  id desc (ctime asc, id asc 可以用索引)&lt;/p&gt;
+&lt;h2 id=&#34;35-深翻页&#34;&gt;3.5 深翻页&lt;/h2&gt;
+&lt;p&gt;翻页时offset过大， 查询会变慢&lt;/p&gt;
+&lt;p&gt;因为被翻页的记录也都要回表&lt;/p&gt;
+&lt;p&gt;一种方法是不用offset，每次带上上次的id，where id &amp;gt; lastid 来查询&lt;/p&gt;
+&lt;p&gt;另外也可以用子查询，先查出id，再用id来查&lt;/p&gt;
+&lt;h2 id=&#34;36-离线worker扫表&#34;&gt;3.6 离线worker扫表&lt;/h2&gt;
+&lt;p&gt;需求是扫描ctime再(111, 999)范围，status是unpay的订单&lt;/p&gt;
+&lt;p&gt;select * from order_info where ctime &amp;gt; 111 and ctime &amp;lt; 999 and status = &amp;lsquo;unpay&amp;rsquo; and id &amp;gt; $lastID order by id asc limit 1;&lt;/p&gt;
+&lt;p&gt;走了id索引，但是用主键扫描，首次定位第一个id，耗时较长&lt;/p&gt;
+&lt;p&gt;方法1：先用ctime索引，查出最大最小id  select min(id), max(id) from order_info where xxx&lt;/p&gt;
+&lt;p&gt;方法2：直接使用ctime索引，再回表，select * from order_info where (ctime = $lastTime and id &amp;gt; $lastID) or ctime &amp;gt; lastTime&lt;/p&gt;
+</content>
+    </item>
+    
+  </channel>
+</rss>
