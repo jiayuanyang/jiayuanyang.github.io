@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  
+    <title>缓存使用经验 :: jiayuan&#39;s Blog</title>
+  
+  <meta http-equiv="content-type" content="text/html; charset=utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="Redis 缓存更新的时序问题 数据一致性 主从延迟 zset更新时序" />
+<meta name="keywords" content="" />
+
+  <meta name="robots" content="noodp" />
+
+<link rel="canonical" href="/posts/cache/" />
+
+
+
+
+
+
+  
+  
+  
+  
+  
+  <link rel="stylesheet" href="/styles.css">
+
+
+
+
+
+
+
+  <link rel="shortcut icon" href="/img/theme-colors/orange.png">
+  <link rel="apple-touch-icon" href="/img/theme-colors/orange.png">
+
+
+
+<meta name="twitter:card" content="summary" />
+
+
+
+<meta property="og:locale" content="en" />
+<meta property="og:type" content="article" />
+<meta property="og:title" content="缓存使用经验">
+<meta property="og:description" content="Redis 缓存更新的时序问题 数据一致性 主从延迟 zset更新时序" />
+<meta property="og:url" content="/posts/cache/" />
+<meta property="og:site_name" content="jiayuan&#39;s Blog" />
+
+  
+    <meta property="og:image" content="/img/favicon/orange.png">
+  
+
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="627">
+
+
+  <meta property="article:published_time" content="2024-05-27 22:00:00 &#43;0800 &#43;0800" />
+
+
+
+
+
+
+
+
+
+
+
+
+</head>
+<body class="orange">
+
+
+<div class="container full">
+
+  <header class="header">
+  <div class="header__inner">
+    <div class="header__logo">
+      <a href="/">
+  <div class="logo">
+    jiayuan&#39;s Blog
+  </div>
+</a>
+
+    </div>
+    
+      <ul class="menu menu--mobile">
+  <li class="menu__trigger">Menu&nbsp;▾</li>
+  <li>
+    <ul class="menu__dropdown">
+      
+        
+          <li><a href="/about">About</a></li>
+        
+      
+        
+          <li><a href="/tags">Tags</a></li>
+        
+      
+      
+    </ul>
+  </li>
+</ul>
+
+    
+    
+  </div>
+  
+    <nav class="navigation-menu">
+  <ul class="navigation-menu__inner menu--desktop">
+    
+      
+        
+          <li><a href="/about" >About</a></li>
+        
+      
+        
+          <li><a href="/tags" >Tags</a></li>
+        
+      
+      
+    
+  </ul>
+</nav>
+
+  
+</header>
+
+
+  <div class="content">
+    
+<article class="post">
+  <h1 class="post-title">
+    <a href="/posts/cache/">缓存使用经验</a>
+  </h1>
+  <div class="post-meta"><time class="post-date">2024-05-27</time></div>
+
+  
+    <span class="post-tags">
+      
+      #<a href="/tags/redis/">Redis</a>&nbsp;
+      
+      #<a href="/tags/%E5%B9%B6%E5%8F%91%E7%BC%96%E7%A8%8B/">并发编程</a>&nbsp;
+      
+      #<a href="/tags/%E6%97%B6%E5%BA%8F/">时序</a>&nbsp;
+      
+      #<a href="/tags/%E6%95%B0%E6%8D%AE%E4%B8%80%E8%87%B4%E6%80%A7/">数据一致性</a>&nbsp;
+      
+    </span>
+  
+  
+
+
+  
+
+  <div class="post-content"><div>
+        <h1 id="一redis">一、Redis<a href="#一redis" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h1>
+<h2 id="11-大key热key问题">1.1 大key、热key问题<a href="#11-大key热key问题" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h2>
+<ul>
+<li>大key
+<ul>
+<li>压缩：使用JSON序列化时，可以进行压缩，一般压缩率能在50%+</li>
+<li>拆分：假设使用string存浏览记录列表
+<ul>
+<li>记录过多时，数据过大，需要拆分</li>
+<li>方式1：构造一个总key，history-summary:$uid，总key里保存分key信息</li>
+<li>方式2：history:$uid直接存第一页信息，额外存总数量，其余全部页的key。数量少时，访问一次即可
+<ul>
+<li>下一页的key为$history_p1:$uid, hisotry_p2:$uid时，如果更新部分key失败，会有不一致问题
+<ul>
+<li>分页可以使用随机key，在第一页里标明，给前端page token，下一次可以用token作为key取数据</li>
+<li>删除时，需要额外一个get操作， 先get到分页随机key，再删除</li>
+</ul>
+</li>
+<li>分页的如果用hashtag，可以使用redis事务保证同时成功，但是会集中在一个节点</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>热key
+<ul>
+<li>拆分：例如计数，拆成_0, _1，读取时合并</li>
+<li>复制：只读的key，可以复制到_0, _1, _2，读取时随机读一个， 更新时一起更新
+<ul>
+<li>情况允许时，redis也可以读从库，但一般不会用</li>
+</ul>
+</li>
+<li>本地缓存：热key可以在本地进行缓存
+<ul>
+<li>实例较少时，本地热key发现即可</li>
+<li>实例较多时，分布式统计</li>
+</ul>
+</li>
+<li>写热点：MQ削峰聚合</li>
+</ul>
+</li>
+<li>缓存穿透/雪崩
+<ul>
+<li>缓存空哨兵</li>
+<li>随机过期时间</li>
+<li>布隆过滤器提前拦截</li>
+</ul>
+</li>
+</ul>
+<h2 id="12-缓存db数据一致性">1.2 缓存/DB数据一致性<a href="#12-缓存db数据一致性" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h2>
+<p>常见的缓存更新方式</p>
+<ul>
+<li>先更新DB，后更新缓存
+<ul>
+<li>更新缓存失败， 取到老数据
+<ul>
+<li>如果是更新DB后异步更新缓存，多次缓存写的顺序不确定</li>
+<li>同步写，失败了还是老数据，还是要做重试，可能会有多个缓存更新顺序问题</li>
+</ul>
+</li>
+<li>更新缓存不建议放到DB事务中（见到过线上这么处理的）
+<ul>
+<li>开启事务，更新DB，更新缓存，更新缓存成功后提交事务，更新缓存失败，回滚事务
+<ul>
+<li>首先，更新缓存失败，可能是超时实际缓存已更新， 此时回滚DB造成数据不一致</li>
+<li>更新缓存超时失败，再次查缓存查到了最新数据，此时commit，commit也可能失败，数据还是不一致</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+<li><del>先更新缓存，后更新DB</del> 排除
+<ul>
+<li>更新DB失败，缓存数据是错误的</li>
+</ul>
+</li>
+<li>先更新DB，后删除缓存
+<ul>
+<li>删除缓存失败， 会导致取到老数据，可以进行重试删除。或者什么都不做，等待缓存过期
+<ul>
+<li>即使删除成功，由于<strong>DB主从延迟</strong>，还是有可能读从库读到旧数据，写入缓存旧数据
+<ul>
+<li>缓存也有主从延迟的问题， 但一般缓存不读从库，不必考虑缓存的主从延迟</li>
+</ul>
+</li>
+<li>可以引入延迟删除，避免主从同步延迟</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>先删除缓存，后更新DB
+<ul>
+<li>删除缓存和更新DB期间，会读到旧数据， 更新旧数据到缓存
+<ul>
+<li>和上面类似</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+<p>先更新缓存，后更新DB逻辑有问题</p>
+<p>其余3种方式都大同小异，都没有100%完美</p>
+<ul>
+<li>缓存操作不要放到DB事务</li>
+<li>为避免主从延迟，可以采用延迟删除</li>
+<li><strong>高并发</strong>时，删除缓存会导致大量请求到DB，尽量采用<strong>更新缓存</strong>方式
+<ul>
+<li>更新缓存比删除缓存更复杂，有时要再拉取不同数据，组合起来</li>
+<li>更新缓存有2个结果：新的数据 或者旧的数据
+<ul>
+<li>成功，新缓存</li>
+<li>失败/超时，旧缓存或新缓存 (不考虑缓存过期)</li>
+</ul>
+</li>
+<li>而删除缓存的2个结果：旧的数据 或者无缓存， 这个结果更确定一些，重试无副作用， 而更新缓存的重试， 要考虑有没有<strong>更新的数据更新</strong>
+<ul>
+<li>成功，缓存被删除</li>
+<li>失败/超时，旧缓存 或者 缓存被删除</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>更新缓存的时序会导致写入缓存顺序不一致，可以通过订阅binlog，串行更新</li>
+</ul>
+<p>很多时候， 不必考虑太细， 我们认为<strong>时间差</strong>足够用应付上述的极端问题</p>
+<ul>
+<li>先更新DB，后删除缓存
+<ul>
+<li>有主从延迟问题， 但主从延迟一般很小，再次查询的时间差足够同步</li>
+</ul>
+</li>
+<li>先删除缓存，后更新DB
+<ul>
+<li>删除缓存 与 更新DB的时间差内，可能将旧数据写入缓存，认为这个时间差很小，忽略</li>
+<li>再有，即使期间没有读操作，也仍有主从延迟问题</li>
+</ul>
+</li>
+</ul>
+<p>总结</p>
+<p>数据库与缓存是两个系统，总会有不一致</p>
+<p><strong>时间差</strong>与<strong>时序</strong>会有引发各种问题</p>
+<h3 id="一种更新的方式尽力避免主从延迟避免不一致">一种更新的方式，尽力避免主从延迟，避免不一致<a href="#一种更新的方式尽力避免主从延迟避免不一致" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h3>
+<p>例如uid的账号基本信息， 空哨兵可以存empty特殊字符，也可以存{uid:-1}， 用-1标记为空</p>
+<p>参考这种方式</p>
+<p>更新DB后， 写入缓存{uid: -2} （-2标识最近有更新，读取时需要再次读从库，或者主库）  过期时间 略大于主从延迟</p>
+<p>应用读缓存，读到-2时，时效要求强的，可以读主库  (读了主库也不更新缓存)， 时效要求低的，读从库</p>
+<p>等到-2过期后，缓存无数据，再次读从库，构造缓存</p>
+<p>并发更新时，会一直向缓存写入-2，等到-2过期，认为最近没有更新，可以读从库构建数据</p>
+<p>这个方式假设主从复制在一个固定时间内完成</p>
+<h3 id="另外一种更新方式">另外一种更新方式<a href="#另外一种更新方式" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h3>
+<ul>
+<li>更新DB后，更新缓存</li>
+</ul>
+<p>更新DB后，更新缓存期间，缓存可能过期</p>
+<p>此时另外一个读请求可能读DB读到旧数据， 再更新DB请求，更新缓存之后， 写入缓存</p>
+<p>更新DB后更新缓存，用SET写入</p>
+<p>读请求构造缓存时，用SETNX写入</p>
+<p>这样避免，读请求的老数据覆盖掉更新后的新数据</p>
+<h2 id="13-zset使用">1.3 zset使用<a href="#13-zset使用" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h2>
+<p>用户点赞列表，zset score存时间戳，member存被点赞对象id</p>
+<ul>
+<li>先读缓存，有数据直接使用</li>
+<li>再读DB，写入zset</li>
+<li>写操作时， 需要先判断zset是否存在， 不存在则不更新zset
+<ul>
+<li>zset存在，则zadd</li>
+</ul>
+</li>
+</ul>
+<p>简单实现就是上述方案，但是上述有时序问题</p>
+<ul>
+<li>先读缓存，zset不存在</li>
+<li>此时读DB，读了100条数据，还未写入zset</li>
+<li>新来的写请求，新点赞记录，判断zset不存在，未写入zset
+<ul>
+<li>如何判断zset存在？exist判断，ttl判断，可能恰好只剩下1s过期，不完美</li>
+<li>可以用expire 延迟过期时间， expire $key 60 更新成功返回1，key不存在返回0</li>
+</ul>
+</li>
+<li>此时100条数据写入zset， zset丢失了最新一条数据</li>
+</ul>
+<p>读zset，不存在时，再读DB之前，应该向zset写入一个假数据， 例如score时间戳无限大/无限小， member=-1</p>
+<p>这样，写请求就可以将最新的数据写入</p>
+<p>读缓存时，要过滤掉member=-1</p>
+<h2 id="14-并发更新缓存的一些通用解法">1.4 并发更新缓存的一些通用解法<a href="#14-并发更新缓存的一些通用解法" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h2>
+<h3 id="缓存提供版本号set能力--cas更新">缓存提供版本号set能力  cas更新<a href="#缓存提供版本号set能力--cas更新" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h3>
+<p>SET时传入版本号，版本号大于key的版本号时，才能写入</p>
+<h3 id="监听binlog更新">监听binlog更新<a href="#监听binlog更新" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h3>
+<p>binlog有序，串行操作</p>
+<p>合并：同一个key， update 1, 2, 3 可以合并后只处理最后一个写</p>
+<h3 id="redis-的watch--multi">redis 的watch  multi<a href="#redis-的watch--multi" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h3>
+<p>太麻烦</p>
+<h1 id="二本地缓存">二、本地缓存<a href="#二本地缓存" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h1>
+<p>redis的性能很高，单节点能够达到10W QPS</p>
+<p>但是有时候还是有瓶颈，可以再本地再做一层缓存</p>
+<ul>
+<li>
+<p>定期更新</p>
+</li>
+<li>
+<p>异步更新</p>
+</li>
+</ul>
+<p>哪些key要本地缓存？</p>
+<ul>
+<li>
+<p>预先知道的，可以云控下发</p>
+</li>
+<li>
+<p>未知的，热key发现</p>
+<ul>
+<li>本地记录
+<ul>
+<li>可以用lfu+滑动窗口， 可以参考redis的lfu实现</li>
+<li>采样， 1/10 1/20，每10个/20个key 统计一次  100W qps，降到10w qps</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>
+<p>读合并</p>
+<ul>
+<li>golang的singleflight， 多个key合并为一次访问
+<ul>
+<li>第一个请求的ctx过短，失败后，被合并的请求也立即失败
+<ul>
+<li>可以加一些策略进行重试</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>singleflight也有一些问题：例如单个连接异常，被合并的请求都会被影响</li>
+</ul>
+</li>
+</ul>
+
+      </div></div>
+
+  
+    
+<div class="pagination">
+    <div class="pagination__title">
+        <span class="pagination__title-h">Read other posts</span>
+        <hr />
+    </div>
+    <div class="pagination__buttons">
+        
+        
+        <span class="button next">
+            <a href="/posts/innodb-space/">
+                <span class="button__text">InnoDB索引占用空间分析</span>
+                <span class="button__icon">→</span>
+            </a>
+        </span>
+        
+    </div>
+</div>
+
+  
+
+  
+    
+
+  
+</article>
+
+  </div>
+
+  
+    <footer class="footer">
+  <div class="footer__inner">
+    
+      <div class="copyright">
+        <span>© 2024 Powered by <a href="https://gohugo.io">Hugo</a></span>
+    
+      <span>:: <a href="https://github.com/panr/hugo-theme-terminal" target="_blank">Theme</a> made by <a href="https://github.com/panr" target="_blank">panr</a></span>
+      </div>
+  </div>
+</footer>
+
+
+
+
+
+
+<script type="text/javascript" src="/bundle.min.js"></script>
+
+
+
+
+
+  
+</div>
+
+</body>
+</html>

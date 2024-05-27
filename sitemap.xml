@@ -2,19 +2,34 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
   xmlns:xhtml="http://www.w3.org/1999/xhtml">
   <url>
+    <loc>/</loc>
+    <lastmod>2024-05-27T22:00:00+08:00</lastmod>
+  </url><url>
+    <loc>/posts/</loc>
+    <lastmod>2024-05-27T22:00:00+08:00</lastmod>
+  </url><url>
+    <loc>/tags/redis/</loc>
+    <lastmod>2024-05-27T22:00:00+08:00</lastmod>
+  </url><url>
+    <loc>/tags/</loc>
+    <lastmod>2024-05-27T22:00:00+08:00</lastmod>
+  </url><url>
+    <loc>/tags/%E5%B9%B6%E5%8F%91%E7%BC%96%E7%A8%8B/</loc>
+    <lastmod>2024-05-27T22:00:00+08:00</lastmod>
+  </url><url>
+    <loc>/tags/%E6%95%B0%E6%8D%AE%E4%B8%80%E8%87%B4%E6%80%A7/</loc>
+    <lastmod>2024-05-27T22:00:00+08:00</lastmod>
+  </url><url>
+    <loc>/tags/%E6%97%B6%E5%BA%8F/</loc>
+    <lastmod>2024-05-27T22:00:00+08:00</lastmod>
+  </url><url>
+    <loc>/posts/cache/</loc>
+    <lastmod>2024-05-27T22:00:00+08:00</lastmod>
+  </url><url>
     <loc>/posts/innodb-space/</loc>
     <lastmod>2024-05-27T09:00:00+08:00</lastmod>
   </url><url>
-    <loc>/</loc>
-    <lastmod>2024-05-27T09:00:00+08:00</lastmod>
-  </url><url>
     <loc>/tags/mysql/</loc>
-    <lastmod>2024-05-27T09:00:00+08:00</lastmod>
-  </url><url>
-    <loc>/posts/</loc>
-    <lastmod>2024-05-27T09:00:00+08:00</lastmod>
-  </url><url>
-    <loc>/tags/</loc>
     <lastmod>2024-05-27T09:00:00+08:00</lastmod>
   </url><url>
     <loc>/tags/%E5%AD%98%E5%82%A8/</loc>
@@ -36,9 +51,6 @@
     <lastmod>2024-05-20T23:32:13+08:00</lastmod>
   </url><url>
     <loc>/tags/mutex/</loc>
-    <lastmod>2024-05-20T23:32:13+08:00</lastmod>
-  </url><url>
-    <loc>/tags/%E5%B9%B6%E5%8F%91%E7%BC%96%E7%A8%8B/</loc>
     <lastmod>2024-05-20T23:32:13+08:00</lastmod>
   </url><url>
     <loc>/posts/golang-async-log/</loc>
