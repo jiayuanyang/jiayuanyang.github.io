@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  
+    <title>在线数据迁移 :: jiayuan&#39;s Blog</title>
+  
+  <meta http-equiv="content-type" content="text/html; charset=utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="在线数据迁移 数据一致性 双写" />
+<meta name="keywords" content="" />
+
+  <meta name="robots" content="noodp" />
+
+<link rel="canonical" href="/posts/online-data-migrate/" />
+
+
+
+
+
+
+  
+  
+  
+  
+  
+  <link rel="stylesheet" href="/styles.css">
+
+
+
+
+
+
+
+  <link rel="shortcut icon" href="/img/theme-colors/orange.png">
+  <link rel="apple-touch-icon" href="/img/theme-colors/orange.png">
+
+
+
+<meta name="twitter:card" content="summary" />
+
+
+
+<meta property="og:locale" content="en" />
+<meta property="og:type" content="article" />
+<meta property="og:title" content="在线数据迁移">
+<meta property="og:description" content="在线数据迁移 数据一致性 双写" />
+<meta property="og:url" content="/posts/online-data-migrate/" />
+<meta property="og:site_name" content="jiayuan&#39;s Blog" />
+
+  
+    <meta property="og:image" content="/img/favicon/orange.png">
+  
+
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="627">
+
+
+  <meta property="article:published_time" content="2024-06-11 08:00:00 &#43;0800 &#43;0800" />
+
+
+
+
+
+
+
+
+
+
+
+
+</head>
+<body class="orange">
+
+
+<div class="container full">
+
+  <header class="header">
+  <div class="header__inner">
+    <div class="header__logo">
+      <a href="/">
+  <div class="logo">
+    jiayuan&#39;s Blog
+  </div>
+</a>
+
+    </div>
+    
+      <ul class="menu menu--mobile">
+  <li class="menu__trigger">Menu&nbsp;▾</li>
+  <li>
+    <ul class="menu__dropdown">
+      
+        
+          <li><a href="/about">About</a></li>
+        
+      
+        
+          <li><a href="/tags">Tags</a></li>
+        
+      
+      
+    </ul>
+  </li>
+</ul>
+
+    
+    
+  </div>
+  
+    <nav class="navigation-menu">
+  <ul class="navigation-menu__inner menu--desktop">
+    
+      
+        
+          <li><a href="/about" >About</a></li>
+        
+      
+        
+          <li><a href="/tags" >Tags</a></li>
+        
+      
+      
+    
+  </ul>
+</nav>
+
+  
+</header>
+
+
+  <div class="content">
+    
+<article class="post">
+  <h1 class="post-title">
+    <a href="/posts/online-data-migrate/">在线数据迁移</a>
+  </h1>
+  <div class="post-meta"><time class="post-date">2024-06-11</time></div>
+
+  
+    <span class="post-tags">
+      
+      #<a href="/tags/%E6%95%B0%E6%8D%AE%E8%BF%81%E7%A7%BB/">数据迁移</a>&nbsp;
+      
+      #<a href="/tags/%E5%8F%8C%E5%86%99/">双写</a>&nbsp;
+      
+      #<a href="/tags/%E4%B8%80%E8%87%B4%E6%80%A7/">一致性</a>&nbsp;
+      
+      #<a href="/tags/%E6%97%B6%E5%BA%8F/">时序</a>&nbsp;
+      
+    </span>
+  
+  
+
+
+  
+
+  <div class="post-content"><div>
+        <h1 id="在线数据迁移">在线数据迁移<a href="#在线数据迁移" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h1>
+<p>很多场景都有数据迁移的需求：</p>
+<ul>
+<li>单表改分表</li>
+<li>增加分表数，分32张表，扩到128张表</li>
+<li>原来使用数据库A，后续迁移到数据库B</li>
+<li>系统进行重构，新老数据库字段变化</li>
+</ul>
+<p>如果允许停机迁移，数据的准确性一致性容易得到保证</p>
+<p>但是大部分场景不允许停机迁移，系统中断几分钟，就会带来不少损失。</p>
+<p>大部分应用选择不停机迁移，如何保证数据一致性是个问题</p>
+<h1 id="双写">双写<a href="#双写" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h1>
+<ol>
+<li>打开双写，读老库</li>
+<li>迁移存量数据</li>
+<li>一致性校验</li>
+<li>双写，灰度读新库</li>
+<li>双写，全量读新库</li>
+<li>下线双写、移除迁移代码</li>
+</ol>
+<p>打开双写，目的是新修改数据新老数据库达到一致</p>
+<p>迁移存量数据后，新老数据库完全一致</p>
+<p>然后维持双写，灰度读新库持续观察，没有问题后读写新库</p>
+<p>有问题可以随时切回读写老数据库</p>
+<p>实际实施起来，比较复杂</p>
+<ol>
+<li>如何双写</li>
+</ol>
+<ul>
+<li>先写新库还是先写老库？</li>
+<li>update时，如果新数据库没有数据，affect rows不一致，是否需要先从老数据库迁移</li>
+<li>老数据库用事务更新多张表，新库是否需要使用事务</li>
+<li>双写失败如何处理，接口返回成功还是失败
+<ul>
+<li>双insert，失败可能是超时导致，实际已插入，即使超时时增加反查，反查本身仍然可能超时</li>
+<li>接口逻辑需多次update，前2个update更新成功，最后一个update新库失败，产生不一致</li>
+</ul>
+</li>
+</ul>
+<ol start="2">
+<li>时序问题</li>
+</ol>
+<ul>
+<li>delete与迁移的时序：存量迁移逻辑捞出数据A，准备迁移到新库，此时delete数据A，新老库双delete。数据A执行迁移，新库多数据</li>
+<li>异步写新库的时序：如果异步写新库，多个更新的时序会错乱</li>
+<li>云控开关时序：期望打开开关的一瞬间，所有实例都感知到变化。但是实际上还会有已经在处理中的请求。因此，处理存量数据时，一般会选择比打开双写早一点的时间，多处理一些数据</li>
+</ul>
+<ol start="3">
+<li>怎么保证数据一致</li>
+</ol>
+<ul>
+<li>双写无法保证同时成功，有时间差</li>
+<li>数据校验
+<ul>
+<li>记录update_time，做增量校验</li>
+<li>update时，同时更新行的hash值，校验时可以select sum(hash) where xx（适用于结构不变的迁移）</li>
+<li>切换期间也可能会引起不一致
+<ul>
+<li>一种可行的方式是切换前停止几秒的写请求</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+<h1 id="存储自身的数据迁移">存储自身的数据迁移<a href="#存储自身的数据迁移" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h1>
+<p>双写方案在一致性上并不是很完美，可以先看看存储自身是如何处理的，能够提供参考</p>
+<h2 id="mysql">MySQL<a href="#mysql" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h2>
+<ul>
+<li>全量同步
+<ul>
+<li>可以使用mysqldump导出，导出时记录binlog位置</li>
+</ul>
+</li>
+<li>增量同步
+<ul>
+<li>应用binlog</li>
+</ul>
+</li>
+</ul>
+<h3 id="在线结构变更">在线结构变更<a href="#在线结构变更" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h3>
+<p>MySQL早期版本DDL锁表，对应用影响较大，有pt-osc，gh-ost方案可以选择</p>
+<ul>
+<li>pt-osc
+<ul>
+<li>使用触发器处理新增的修改
+<ul>
+<li>原表的insert，在新表replace into</li>
+<li>原表的delete，在新表delete ignore</li>
+<li>原本的update，在新表replace into</li>
+</ul>
+</li>
+<li>批量导入存量数据
+<ul>
+<li>使用insert ignore，避免已经被触发器插入</li>
+<li>insert时需要锁，避免delete引起的时序问题
+<ul>
+<li>select读到数据A，请求delete A，触发器在新库空操作，然后insert到新库</li>
+<li>实际上pt-osc使用insert ignore select  xxx from old_table lock in share mode
+<ul>
+<li>insert  select 时持有锁，不会发生这种时序问题</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>gh-ost
+<ul>
+<li>应用binlog处理新增的修改
+<ul>
+<li>insert，转为replace into</li>
+<li>delete，转为delete</li>
+<li>update，不变
+<ul>
+<li>未导入时，update空操作，后续会将新数据导入</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>导入存量数据，与pt-osc类似
+<ul>
+<li>insert ignore select  xxx from old_table lock in share mode</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+<h2 id="redis-cluster">Redis Cluster<a href="#redis-cluster" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h2>
+<p>Redis对一致性要求并不高，方案可以作为参考</p>
+<ul>
+<li>
+<p>全量同步</p>
+<ul>
+<li>master导出RDB文件，slave加载</li>
+<li>导出RDB期间的读写记录在缓冲区</li>
+</ul>
+</li>
+<li>
+<p>增量同步</p>
+<ul>
+<li>维持长连接，命令传播</li>
+<li>使用的是环形缓冲区，速度不匹配会丢数据导致不一致</li>
+</ul>
+</li>
+</ul>
+<h3 id="slot迁移">slot迁移<a href="#slot迁移" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h3>
+<p>新老节点配合</p>
+<p>从老节点迁移数据到新节点</p>
+<p>请求key时，如果该key已经从老节点迁移到新节点，老节点会返回ASK命令</p>
+<p>客户端请求新节点</p>
+<p>迁移完成后，再次请求原本在老节点的key，会返回MOVE命令，客户端可以更新路由</p>
+<h1 id="数据一致性">数据一致性<a href="#数据一致性" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h1>
+<p>一般情况下，双写失败的概率很小，做了数据校验后进行切换，数据不一致概率很低，迁移后还可以再次校验</p>
+<p>但双写无法保证新老存储的事务性，总归是有不一致的概率</p>
+<p>下面讨论两种数据一致性高且比较通用的方案</p>
+<h2 id="方案一全量同步增量迁移">方案一：全量同步+增量迁移<a href="#方案一全量同步增量迁移" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h2>
+<p>导出快照，并且记录导出快照时位点，同步存量数据</p>
+<p>利用binlog追增量数据，主从差异降为0或者很小时，禁止主库写入，然后进行切换</p>
+<p>停写可以保证数据一致性，由于大部分都有分库分表，停写只会影响一部分用户</p>
+<p>注意在切换后，避免遗留/新增的请求仍然访问老库</p>
+<h2 id="方案二细粒度迁移写操作与迁移互斥">方案二：细粒度迁移，写操作与迁移互斥<a href="#方案二细粒度迁移写操作与迁移互斥" class="hanchor" ariaLabel="Anchor">&#8983;</a> </h2>
+<p>方案一利用binlog有序，导入全量存量数后追增量数据</p>
+<p>还可以分uid迁移，可以理解成对uid的操作加分布式读写锁</p>
+<p>写操作与迁移操作竞争同一把分布式锁</p>
+<ul>
+<li>
+<p>用户在线的读写请求</p>
+<ul>
+<li>读时判断路由，读新库还是老库 (已经切到新库，读了老库不算问题)</li>
+<li>写时加锁，与用户其余写请求、离线迁移互斥</li>
+</ul>
+</li>
+<li>
+<p>worker离线的迁移请求</p>
+<ul>
+<li>分uid迁移，控制速率</li>
+</ul>
+</li>
+</ul>
+<p>更具体一点的方案参考：</p>
+<p>新建一张迁移状态表，字段 id,uid,status,ctime,mtime,finish等</p>
+<ul>
+<li>
+<p>用户读请求，读迁移状态表，如果finish=1,读新库，否则读老库</p>
+</li>
+<li>
+<p>用户写请求，先判断是否迁移完成，可以使用缓存等策略加速</p>
+<ul>
+<li>状态为待迁移时，更新状态占用锁，update set status = &lsquo;迁移中&rsquo; where status  = &lsquo;待迁移&rsquo; and uid = xxx，然后迁移数据到新库，迁移失败释放锁，下次迁移时删除新库数据；迁移成功后更新status = &lsquo;迁移成功&rsquo;，更新失败释放锁，返回处理失败</li>
+</ul>
+</li>
+</ul>
+<p>与分布式锁类似，异常情况下可能会无法释放锁。可以增加一些逻辑，添加heartbeat字段，超时自动剥夺锁，worker定时扫描人工处理等等</p>
+<p>该方案将写与迁移互斥，保证数据一致性</p>
+<p>写持有锁时，其他写无法进行， 迁移无法进行</p>
+<p>迁移持有锁时，写无法进行</p>
+<p>实际操作时，可以进行迁移操作，迁移后更新status，但是并不读写新库</p>
+<p>观察服务与新老存储负载情况，再决定是否可采取该方案</p>
+<hr>
+<p>当然，还是要看具体场景</p>
+<p>有些场景会有更简单的解决方案</p>
+
+      </div></div>
+
+  
+    
+<div class="pagination">
+    <div class="pagination__title">
+        <span class="pagination__title-h">Read other posts</span>
+        <hr />
+    </div>
+    <div class="pagination__buttons">
+        
+        
+        <span class="button next">
+            <a href="/posts/cache/">
+                <span class="button__text">缓存使用经验</span>
+                <span class="button__icon">→</span>
+            </a>
+        </span>
+        
+    </div>
+</div>
+
+  
+
+  
+    
+
+  
+</article>
+
+  </div>
+
+  
+    <footer class="footer">
+  <div class="footer__inner">
+    
+      <div class="copyright">
+        <span>© 2024 Powered by <a href="https://gohugo.io">Hugo</a></span>
+    
+      <span>:: <a href="https://github.com/panr/hugo-theme-terminal" target="_blank">Theme</a> made by <a href="https://github.com/panr" target="_blank">panr</a></span>
+      </div>
+  </div>
+</footer>
+
+
+
+
+
+
+<script type="text/javascript" src="/bundle.min.js"></script>
+
+
+
+
+
+  
+</div>
+
+</body>
+</html>

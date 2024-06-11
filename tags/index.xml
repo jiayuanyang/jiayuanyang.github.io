@@ -6,7 +6,47 @@
     <description>Recent content in Tags on jiayuan&#39;s Blog</description>
     <generator>Hugo -- gohugo.io</generator>
     <language>en-us</language>
-    <lastBuildDate>Mon, 27 May 2024 22:00:00 +0800</lastBuildDate><atom:link href="/tags/index.xml" rel="self" type="application/rss+xml" />
+    <lastBuildDate>Tue, 11 Jun 2024 08:00:00 +0800</lastBuildDate><atom:link href="/tags/index.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>一致性</title>
+      <link>/tags/%E4%B8%80%E8%87%B4%E6%80%A7/</link>
+      <pubDate>Tue, 11 Jun 2024 08:00:00 +0800</pubDate>
+      
+      <guid>/tags/%E4%B8%80%E8%87%B4%E6%80%A7/</guid>
+      <description></description>
+      <content></content>
+    </item>
+    
+    <item>
+      <title>双写</title>
+      <link>/tags/%E5%8F%8C%E5%86%99/</link>
+      <pubDate>Tue, 11 Jun 2024 08:00:00 +0800</pubDate>
+      
+      <guid>/tags/%E5%8F%8C%E5%86%99/</guid>
+      <description></description>
+      <content></content>
+    </item>
+    
+    <item>
+      <title>数据迁移</title>
+      <link>/tags/%E6%95%B0%E6%8D%AE%E8%BF%81%E7%A7%BB/</link>
+      <pubDate>Tue, 11 Jun 2024 08:00:00 +0800</pubDate>
+      
+      <guid>/tags/%E6%95%B0%E6%8D%AE%E8%BF%81%E7%A7%BB/</guid>
+      <description></description>
+      <content></content>
+    </item>
+    
+    <item>
+      <title>时序</title>
+      <link>/tags/%E6%97%B6%E5%BA%8F/</link>
+      <pubDate>Tue, 11 Jun 2024 08:00:00 +0800</pubDate>
+      
+      <guid>/tags/%E6%97%B6%E5%BA%8F/</guid>
+      <description></description>
+      <content></content>
+    </item>
+    
     <item>
       <title>Redis</title>
       <link>/tags/redis/</link>
@@ -33,16 +73,6 @@
       <pubDate>Mon, 27 May 2024 22:00:00 +0800</pubDate>
       
       <guid>/tags/%E6%95%B0%E6%8D%AE%E4%B8%80%E8%87%B4%E6%80%A7/</guid>
-      <description></description>
-      <content></content>
-    </item>
-    
-    <item>
-      <title>时序</title>
-      <link>/tags/%E6%97%B6%E5%BA%8F/</link>
-      <pubDate>Mon, 27 May 2024 22:00:00 +0800</pubDate>
-      
-      <guid>/tags/%E6%97%B6%E5%BA%8F/</guid>
       <description></description>
       <content></content>
     </item>
