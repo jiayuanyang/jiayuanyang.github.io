@@ -6,7 +6,55 @@
     <description>Recent content in Posts on jiayuan&#39;s Blog</description>
     <generator>Hugo -- gohugo.io</generator>
     <language>en-us</language>
-    <lastBuildDate>Thu, 13 Jun 2024 23:00:00 +0800</lastBuildDate><atom:link href="/posts/index.xml" rel="self" type="application/rss+xml" />
+    <lastBuildDate>Tue, 18 Jun 2024 22:00:00 +0800</lastBuildDate><atom:link href="/posts/index.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>关于第三方异步通知 &amp; 超时控制</title>
+      <link>/posts/developer-notification/</link>
+      <pubDate>Tue, 18 Jun 2024 22:00:00 +0800</pubDate>
+      
+      <guid>/posts/developer-notification/</guid>
+      <description>在接入某支付方时， 对接了实时通知。用户支付后，支付方会实时推送支付结果
+如果收到通知后，业务处理失败，应如何返回响应？
+我们的系统直接返回失败，有如下考虑：
+异步通知处理失败，返回失败响应，第三方会逐渐增加间隔进行重试，到达最大重试次数后放弃 自身系统此时可能确有故障，恢复后第三方重试即可成功 用户侧支付成功后会主动上报支付结果 离线worker会定期轮询未支付订单，主动查询订单结果，在上述2种方式均失效时做兜底 T+１的对账再一次监控是否有掉单 以上4种方式，最大程度避免了用户支付后，权益未到账
+因此，系统不强依赖第三方的异步通知，可以直接返回失败
+最近遇到一个场景，靠第三方的重试是没用的
+通知的数据有时效性，当我们返回失败后，5分钟后第三方再次发起通知时，参数已过期
+收到第三方通知 业务逻辑处理耗时较长，无法优化 第三方超时断开了连接，conext被cancel，返回失败响应 同时，业务逻辑中断，没有继续进行 对于这个场景，不应该使用第三方请求的context，应该使用新ccontext，自主管理超时时间
+但是，这样仍然会超时，返回失败，第三方再次重试时参数已过期，怎么办?
+在接受到通知时，记录下通知详情后，即可返回第三方成功响应
+然后执行业务逻辑，处理失败内部可按一定策略重试，避免参数过期</description>
+      <content>&lt;p&gt;在接入某支付方时， 对接了实时通知。用户支付后，支付方会实时推送支付结果&lt;/p&gt;
+&lt;p&gt;如果收到通知后，业务处理失败，应如何返回响应？&lt;/p&gt;
+&lt;p&gt;我们的系统直接返回失败，有如下考虑：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;异步通知处理失败，返回失败响应，第三方会逐渐增加间隔进行重试，到达最大重试次数后放弃
+&lt;ol&gt;
+&lt;li&gt;自身系统此时可能确有故障，恢复后第三方重试即可成功&lt;/li&gt;
+&lt;/ol&gt;
+&lt;/li&gt;
+&lt;li&gt;用户侧支付成功后会主动上报支付结果&lt;/li&gt;
+&lt;li&gt;离线worker会定期轮询未支付订单，主动查询订单结果，在上述2种方式均失效时做兜底&lt;/li&gt;
+&lt;li&gt;T+１的对账再一次监控是否有掉单&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;以上4种方式，最大程度避免了用户支付后，权益未到账&lt;/p&gt;
+&lt;p&gt;因此，系统不强依赖第三方的异步通知，可以直接返回失败&lt;/p&gt;
+&lt;hr&gt;
+&lt;p&gt;最近遇到一个场景，靠第三方的重试是没用的&lt;/p&gt;
+&lt;p&gt;通知的数据有&lt;strong&gt;时效性&lt;/strong&gt;，当我们返回失败后，5分钟后第三方再次发起通知时，参数&lt;strong&gt;已过期&lt;/strong&gt;&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;收到第三方通知&lt;/li&gt;
+&lt;li&gt;业务逻辑处理耗时较长，无法优化&lt;/li&gt;
+&lt;li&gt;第三方超时断开了连接，conext被cancel，返回失败响应&lt;/li&gt;
+&lt;li&gt;同时，业务逻辑中断，&lt;strong&gt;没有继续进行&lt;/strong&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;对于这个场景，不应该使用第三方请求的context，应该使用新ccontext，自主管理超时时间&lt;/p&gt;
+&lt;p&gt;但是，这样仍然会超时，返回失败，第三方再次重试时参数已过期，怎么办?&lt;/p&gt;
+&lt;p&gt;在接受到通知时，记录下通知详情后，即可返回第三方成功响应&lt;/p&gt;
+&lt;p&gt;然后执行业务逻辑，处理失败内部可按一定策略重试，避免参数过期&lt;/p&gt;
+</content>
+    </item>
+    
     <item>
       <title>Go sync包分析</title>
       <link>/posts/golang-sync-package/</link>
