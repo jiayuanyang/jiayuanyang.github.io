@@ -135,6 +135,42 @@
     
       <article class="post on-list">
         <h1 class="post-title">
+          <a href="/posts/cache/">缓存使用经验</a>
+        </h1>
+        <div class="post-meta"><time class="post-date">2024-05-27</time></div>
+
+        
+          <span class="post-tags">
+            
+            #<a href="/tags/redis/">Redis</a>&nbsp;
+            
+            #<a href="/tags/%E5%B9%B6%E5%8F%91%E7%BC%96%E7%A8%8B/">并发编程</a>&nbsp;
+            
+            #<a href="/tags/%E6%97%B6%E5%BA%8F/">时序</a>&nbsp;
+            
+            #<a href="/tags/%E6%95%B0%E6%8D%AE%E4%B8%80%E8%87%B4%E6%80%A7/">数据一致性</a>&nbsp;
+            
+          </span>
+        
+
+        
+
+
+        <div class="post-content">
+          
+            Redis 缓存更新的时序问题 数据一致性 主从延迟 zset更新时序
+          
+        </div>
+
+        
+          <div>
+            <a class="read-more button" href="/posts/cache/">Read more →</a>
+          </div>
+        
+      </article>
+    
+      <article class="post on-list">
+        <h1 class="post-title">
           <a href="/posts/innodb-space/">InnoDB索引占用空间分析</a>
         </h1>
         <div class="post-meta"><time class="post-date">2024-05-27</time></div>
@@ -235,53 +271,6 @@
         
           <div>
             <a class="read-more button" href="/posts/golang-async-log/">Read more →</a>
-          </div>
-        
-      </article>
-    
-      <article class="post on-list">
-        <h1 class="post-title">
-          <a href="/posts/high-concurrency-system-design/"></a>
-        </h1>
-        <div class="post-meta"></div>
-
-        
-
-        
-
-
-        <div class="post-content">
-          
-            超高并发系统设计——直播红包 以直播红包场景为例，讨论超高并发系统设计的相关策略
-预设量级：
-直播间千万在线观众
-主播发红包，包100w个红包
-一、高并发抢红包 传统的做法，是使用DB乐观锁或悲观锁进行红包扣减
-以悲观锁为例：
-begin; select * from 红包表 where 红包id = xxx for update; if 余额 &gt; 0 update 红包表 set 余额 = 余额 - 本次红包金额, 子红包id = 子红包id + 1 where ; commit; 拿到余额和子红包id后，写入用户红包表
-随着并发增高，红包扣减时DB的行锁竞争加剧，简单的解决方式是拆分为多行，再进一步可以分库分表
-不管怎样拆分，最终抢红包的高并发还是会直接打到DB，难以支撑超高并发
-优化1：预先拆分红包，不依赖行锁扣减 既然每次请求都去DB拆分红包难以支撑超高并发，那么可以预先拆好红包，每次抢红包取到一个子红包，写入DB
-发红包时预先拆分红包个数的子红包，写入Redis 的List结构 抢红包时，从Redis List取出子红包，写MySQL，子红包ID为唯一键 Redis由于数据存储在内存，性能较高，但是单实例也难以支撑千万QPS，因此，可使用cluster模式，拆分为多个Key
-Q：Redis主实例挂掉，POP操作未同步到从实例，从实例升级为主实例，同一个子红包POP多次，有无问题？
-A：子红包ID为唯一键，POP出来同步写入DB，即使同一个子红包POP多次，第二次的写入失败
-Q：用户红包表怎么分库分表？
-A：上述方案，需要按子红包ID分表；如果以UID分表，两个UID POP出同一个子红包，落到不同表里，唯一键不生效
-问题： 此时的瓶颈在于DB写入：insert虽然相较update不需要竞争行锁，但是需要进行唯一性校验，维护多个索引，同时B+树内部并发操作时也会有数据竞争，在高并发时，瞬时海量的insert可能会打垮DB
-优化2：引入MQ削峰，转为异步操作 优化1不再依赖DB进行红包扣减，而是预先拆分，从Redis取出子红包
-仍然会受限于DB高并发插入，引入MQ削峰是一个常见策略
-其余流程不变，POP出子红包后，同步写DB改为同步写MQ，写MQ成功后返回用户抢红包成功
-使用Redis取出库存，引入MQ削峰
-Redis拆分多个Key，MQ可以扩分区，二者几乎是无限的容量
-此时已经可以解决抢红包的超高并发
-问题： 异步写DB，DB的唯一键约束无法生效，会出现由于Redis新主节点重复POP子红包，导致同一个子红包下发给多个用户的问题 MQ如果宕机，丢失了消息，无法找回怎么办？ 优化3：保证一个子红包只取出一次 优化2中写MQ后异步写DB，会出现一个子红包下发给多个用户的问题。
-原因在于Redis主从切换后， List中的数据POP多次，那么，只需要保证一个子红包只取出一次即可
-          
-        </div>
-
-        
-          <div>
-            <a class="read-more button" href="/posts/high-concurrency-system-design/">Read more →</a>
           </div>
         
       </article>

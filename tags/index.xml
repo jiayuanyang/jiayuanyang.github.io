@@ -6,7 +6,27 @@
     <description>Recent content in Tags on jiayuan&#39;s Blog</description>
     <generator>Hugo -- gohugo.io</generator>
     <language>en-us</language>
-    <lastBuildDate>Tue, 18 Jun 2024 22:00:00 +0800</lastBuildDate><atom:link href="/tags/index.xml" rel="self" type="application/rss+xml" />
+    <lastBuildDate>Mon, 26 Aug 2024 10:00:00 +0800</lastBuildDate><atom:link href="/tags/index.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>系统设计</title>
+      <link>/tags/%E7%B3%BB%E7%BB%9F%E8%AE%BE%E8%AE%A1/</link>
+      <pubDate>Mon, 26 Aug 2024 10:00:00 +0800</pubDate>
+      
+      <guid>/tags/%E7%B3%BB%E7%BB%9F%E8%AE%BE%E8%AE%A1/</guid>
+      <description></description>
+      <content></content>
+    </item>
+    
+    <item>
+      <title>高并发</title>
+      <link>/tags/%E9%AB%98%E5%B9%B6%E5%8F%91/</link>
+      <pubDate>Mon, 26 Aug 2024 10:00:00 +0800</pubDate>
+      
+      <guid>/tags/%E9%AB%98%E5%B9%B6%E5%8F%91/</guid>
+      <description></description>
+      <content></content>
+    </item>
+    
     <item>
       <title>异步通知</title>
       <link>/tags/%E5%BC%82%E6%AD%A5%E9%80%9A%E7%9F%A5/</link>

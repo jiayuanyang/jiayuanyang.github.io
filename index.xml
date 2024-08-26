@@ -6,7 +6,181 @@
     <description>Recent content on jiayuan&#39;s Blog</description>
     <generator>Hugo -- gohugo.io</generator>
     <language>en-us</language>
-    <lastBuildDate>Tue, 18 Jun 2024 22:00:00 +0800</lastBuildDate><atom:link href="/index.xml" rel="self" type="application/rss+xml" />
+    <lastBuildDate>Mon, 26 Aug 2024 10:00:00 +0800</lastBuildDate><atom:link href="/index.xml" rel="self" type="application/rss+xml" />
+    <item>
+      <title>超高并发系统设计——直播红包</title>
+      <link>/posts/high-concurrency-system-design/</link>
+      <pubDate>Mon, 26 Aug 2024 10:00:00 +0800</pubDate>
+      
+      <guid>/posts/high-concurrency-system-design/</guid>
+      <description>超高并发系统设计——直播红包 以直播红包场景为例，讨论超高并发系统设计的相关策略
+预设量级：
+直播间千万在线观众
+主播发红包，包100w个红包
+一、高并发抢红包 传统的做法，是使用DB乐观锁或悲观锁进行红包扣减
+以悲观锁为例：
+begin; select * from 红包表 where 红包id = xxx for update; if 余额 &amp;gt; 0 update 红包表 set 余额 = 余额 - 本次红包金额, 子红包id = 子红包id + 1 where ; commit; 拿到余额和子红包id后，写入用户红包表
+随着并发增高，红包扣减时DB的行锁竞争加剧，简单的解决方式是拆分为多行，再进一步可以分库分表
+不管怎样拆分，最终抢红包的高并发还是会直接打到DB，难以支撑超高并发
+优化1：预先拆分红包，不依赖行锁扣减 既然每次请求都去DB拆分红包难以支撑超高并发，那么可以预先拆好红包，每次抢红包取到一个子红包，写入DB
+发红包时预先拆分红包个数的子红包，写入Redis 的List结构 抢红包时，从Redis List取出子红包，写MySQL，子红包ID为唯一键 Redis由于数据存储在内存，性能较高，但是单实例也难以支撑千万QPS，因此，可使用cluster模式，拆分为多个Key
+Q：Redis主实例挂掉，POP操作未同步到从实例，从实例升级为主实例，同一个子红包POP多次，有无问题？
+A：子红包ID为唯一键，POP出来同步写入DB，即使同一个子红包POP多次，第二次的写入失败
+Q：用户红包表怎么分库分表？
+A：上述方案，需要按子红包ID分表；如果以UID分表，两个UID POP出同一个子红包，落到不同表里，唯一键不生效
+问题： 此时的瓶颈在于DB写入：insert虽然相较update不需要竞争行锁，但是需要进行唯一性校验，维护多个索引，同时B+树内部并发操作时也会有数据竞争，在高并发时，瞬时海量的insert可能会打垮DB
+优化2：引入MQ削峰，转为异步操作 优化1不再依赖DB进行红包扣减，而是预先拆分，从Redis取出子红包
+仍然会受限于DB高并发插入，引入MQ削峰是一个常见策略
+其余流程不变，POP出子红包后，同步写DB改为同步写MQ，写MQ成功后返回用户抢红包成功
+使用Redis取出库存，引入MQ削峰
+Redis拆分多个Key，MQ可以扩分区，二者几乎是无限的容量
+此时已经可以解决抢红包的超高并发
+问题： 异步写DB，DB的唯一键约束无法生效，会出现由于Redis新主节点重复POP子红包，导致同一个子红包下发给多个用户的问题 MQ如果宕机，丢失了消息，无法找回怎么办？ 优化3：保证一个子红包只取出一次 优化2中写MQ后异步写DB，会出现一个子红包下发给多个用户的问题。
+原因在于Redis主从切换后， List中的数据POP多次，那么，只需要保证一个子红包只取出一次即可</description>
+      <content>&lt;h1 id=&#34;超高并发系统设计直播红包&#34;&gt;超高并发系统设计——直播红包&lt;/h1&gt;
+&lt;p&gt;以直播红包场景为例，讨论超高并发系统设计的相关策略&lt;/p&gt;
+&lt;p&gt;预设量级：&lt;/p&gt;
+&lt;p&gt;直播间&lt;strong&gt;千万&lt;/strong&gt;在线观众&lt;/p&gt;
+&lt;p&gt;主播发红包，包&lt;strong&gt;100w&lt;/strong&gt;个红包&lt;/p&gt;
+&lt;h2 id=&#34;一高并发抢红包&#34;&gt;一、高并发抢红包&lt;/h2&gt;
+&lt;p&gt;传统的做法，是使用DB乐观锁或悲观锁进行红包扣减&lt;/p&gt;
+&lt;p&gt;以悲观锁为例：&lt;/p&gt;
+&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;begin;
+select * from 红包表 where 红包id = xxx for update;
+if 余额 &amp;gt; 0
+	update 红包表 set 余额 = 余额 - 本次红包金额, 子红包id = 子红包id + 1 where ;
+commit;
+&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;拿到余额和子红包id后，写入用户红包表&lt;/p&gt;
+&lt;p&gt;随着并发增高，红包扣减时DB的&lt;strong&gt;行锁&lt;/strong&gt;竞争加剧，简单的解决方式是&lt;strong&gt;拆分为多行&lt;/strong&gt;，再进一步可以&lt;strong&gt;分库分表&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;不管怎样拆分，最终抢红包的高并发还是会直接打到DB，难以支撑超高并发&lt;/p&gt;
+&lt;h3 id=&#34;优化1预先拆分红包不依赖行锁扣减&#34;&gt;优化1：预先拆分红包，不依赖行锁扣减&lt;/h3&gt;
+&lt;p&gt;既然每次请求都去DB拆分红包难以支撑超高并发，那么可以预先拆好红包，每次抢红包取到一个子红包，写入DB&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;发红包时预先拆分红包个数的子红包，写入Redis 的List结构&lt;/li&gt;
+&lt;li&gt;抢红包时，从Redis List取出子红包，写MySQL，子红包ID为唯一键&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;Redis由于数据存储在内存，性能较高，但是单实例也难以支撑千万QPS，因此，可使用cluster模式，&lt;strong&gt;拆分为多个Key&lt;/strong&gt;&lt;/p&gt;
+&lt;p&gt;Q：Redis主实例挂掉，POP操作未同步到从实例，从实例升级为主实例，同一个子红包POP多次，有无问题？&lt;/p&gt;
+&lt;p&gt;A：子红包ID为唯一键，POP出来同步写入DB，即使同一个子红包POP多次，第二次的写入失败&lt;/p&gt;
+&lt;p&gt;Q：用户红包表怎么分库分表？&lt;/p&gt;
+&lt;p&gt;A：上述方案，需要按子红包ID分表；如果以UID分表，两个UID POP出同一个子红包，落到不同表里，唯一键不生效&lt;/p&gt;
+&lt;h4 id=&#34;问题&#34;&gt;问题：&lt;/h4&gt;
+&lt;p&gt;此时的瓶颈在于DB写入：insert虽然相较update不需要竞争行锁，但是需要进行唯一性校验，维护多个索引，同时B+树内部并发操作时也会有数据竞争，在高并发时，瞬时海量的insert可能会打垮DB&lt;/p&gt;
+&lt;h3 id=&#34;优化2引入mq削峰转为异步操作&#34;&gt;优化2：引入MQ削峰，转为异步操作&lt;/h3&gt;
+&lt;p&gt;优化1不再依赖DB进行红包扣减，而是预先拆分，从Redis取出子红包&lt;/p&gt;
+&lt;p&gt;仍然会受限于DB高并发插入，引入MQ削峰是一个常见策略&lt;/p&gt;
+&lt;p&gt;其余流程不变，POP出子红包后，同步写DB改为&lt;strong&gt;同步写MQ&lt;/strong&gt;，写MQ成功后返回用户抢红包成功&lt;/p&gt;
+&lt;p&gt;使用Redis取出库存，引入MQ削峰&lt;/p&gt;
+&lt;p&gt;Redis拆分多个Key，MQ可以扩分区，二者几乎是无限的容量&lt;/p&gt;
+&lt;p&gt;此时已经可以解决抢红包的超高并发&lt;/p&gt;
+&lt;h4 id=&#34;问题-1&#34;&gt;问题：&lt;/h4&gt;
+&lt;ol&gt;
+&lt;li&gt;异步写DB，DB的唯一键约束无法生效，会出现由于Redis新主节点重复POP子红包，导致同一个子红包下发给多个用户的问题&lt;/li&gt;
+&lt;li&gt;MQ如果宕机，丢失了消息，无法找回怎么办？&lt;/li&gt;
+&lt;/ol&gt;
+&lt;h3 id=&#34;优化3保证一个子红包只取出一次&#34;&gt;优化3：保证一个子红包只取出一次&lt;/h3&gt;
+&lt;p&gt;优化2中写MQ后异步写DB，会出现一个子红包下发给多个用户的问题。&lt;/p&gt;
+&lt;p&gt;原因在于Redis主从切换后， List中的数据POP多次，那么，只需要保证一个子红包只取出一次即可&lt;/p&gt;
+&lt;p&gt;可以使用DB批量扣减，每次取出100个子红包（update 红包库存 set 已用库存=已用库存+100），&lt;/p&gt;
+&lt;p&gt;DB的持久化可以保证只会取出一次，现在访问DB的次数缩减到1%，但DB还可能是一个性能瓶颈&lt;/p&gt;
+&lt;p&gt;可再次用Redis优化，不竞争行锁：把100w个红包，拆分为1w个小红包，写到Redis List中，仍然是POP出来，再写DB，使用唯一键确定所有权&lt;/p&gt;
+&lt;p&gt;此时，一个子红包只会取出一次，不再需要以子红包ID分表，用户红包表可以按UID拆分&lt;/p&gt;
+&lt;h2 id=&#34;二对账&#34;&gt;二、对账&lt;/h2&gt;
+&lt;p&gt;优化2里提到一个问题，MQ宕机，丢失消息怎么办？ 用户已经看到了抢红包成功的结果，但最终没收到红包是不可接受的&lt;/p&gt;
+&lt;p&gt;最直接的解决方案是让MQ也同步刷盘(Kafka log.flush.interval.messages参数)，但这样MQ的性能也会大大降低，成为一个性能瓶颈&lt;/p&gt;
+&lt;p&gt;一种可行策略是结合客户端对账：&lt;/p&gt;
+&lt;p&gt;用户抢到红包后，额外返回一个&lt;strong&gt;加密的token&lt;/strong&gt;，证明用户抢到了红包&lt;/p&gt;
+&lt;p&gt;客户端收到抢红包成功的结果后，先写入客户端本地DB，确保刷盘后，弹出抢红包成功的提示&lt;/p&gt;
+&lt;p&gt;后续可使用该token作为凭证，定时轮训红包下发状态&lt;/p&gt;
+&lt;p&gt;如果MQ宕机丢数据，可通过该token补发数据&lt;/p&gt;
+&lt;h2 id=&#34;三快速消费&#34;&gt;三、快速消费&lt;/h2&gt;
+&lt;p&gt;解决了抢红包的问题，剩下的就是快速消费消息，快速兑现红包&lt;/p&gt;
+&lt;p&gt;优化方式也比较多，例如：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;生产消息时，按用户红包分表聚合，同一个红包分表的数据写入一个MQ分区&lt;/li&gt;
+&lt;li&gt;批量insert， INSERT INTO VALUES (红包1), (红包2)&amp;hellip;&lt;/li&gt;
+&lt;li&gt;消费时累计多个消息commit一次&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;除此之外，由于有了兜底的客户端对账，可以调整DB参数(innodb_flush_log_at_commit, sync_binlog)，不需要同步刷盘（会出现一个uid写入多个子红包，最终交给支付系统做幂等）&lt;/p&gt;
+&lt;h3 id=&#34;uid并发抢红包的问题&#34;&gt;UID并发抢红包的问题&lt;/h3&gt;
+&lt;p&gt;上述讨论忽略了一个问题，如果没有做其他限制，同一个UID是能抢到多个红包的（暂不考虑黑产破解，直接调用接口的情况）&lt;/p&gt;
+&lt;p&gt;超高并发时，客户端应该保证：&lt;/p&gt;
+&lt;ol&gt;
+&lt;li&gt;不能并发发起抢红包请求&lt;/li&gt;
+&lt;li&gt;抢到一次红包后，按钮置灰，不会再次发起抢红包请求&lt;/li&gt;
+&lt;/ol&gt;
+&lt;p&gt;即使客户端做到这两点，也可能会重复请求：&lt;/p&gt;
+&lt;p&gt;例如第一次抢红包成功，接口超时，客户端再次抢红包，MQ中有一个UID有两条记录&lt;/p&gt;
+&lt;p&gt;再例如支持多设备登录，在多设备同时抢红包也无法限制&lt;/p&gt;
+&lt;p&gt;按照UID分表，UID上有唯一键，最终重复的请求会失败&lt;/p&gt;
+&lt;p&gt;这样红包的数量变少了，能够抢到红包的人数就少了&lt;/p&gt;
+&lt;p&gt;怎么解决呢？&lt;/p&gt;
+&lt;p&gt;容易想到分布式锁，SETNX&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;先判断未抢到过，然后POP子红包，再SETNX，最后写入MQ&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;这样，如果写入MQ失败，用户再次抢红包，也会失败，实际未得到红包&lt;/p&gt;
+&lt;p&gt;修改一下，变成&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;先判断未抢到过，然后POP子红包，再写入MQ，最后SETNX&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;并发的请求还是能写入两次，但是能拦住后续的请求（SETNX成功）&lt;/p&gt;
+&lt;p&gt;全部抢红包请求都至少增加了一次redis的判断，redis压力会上升。并且由于是多个系统，不再一个事务内，没有很强的一致性保证&lt;/p&gt;
+&lt;p&gt;还可以考虑换一种方式，将抢红包的请求按UID&lt;strong&gt;一致性hash到固定实例&lt;/strong&gt;，由实例内存去重&lt;/p&gt;
+&lt;p&gt;总之，不管怎样，很难保证在MQ消息中一个UID不会抢到多个子红包&lt;/p&gt;
+&lt;h2 id=&#34;四其他&#34;&gt;四、其他&lt;/h2&gt;
+&lt;p&gt;用户体验上：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;批量取红包库存，库存100w，实际发放可能小于100w（代码层面也可再优化），产品展示策略上优化&lt;/li&gt;
+&lt;li&gt;抢到红包后，客户端就可以先在本地展示发放中的状态（此时可能还未写入用户红包表）&lt;/li&gt;
+&lt;li&gt;异步写DB，跨设备查看红包列表会出现不一致，待优化&lt;/li&gt;
+&lt;li&gt;用户进钱包查看余额时，如果红包未发放，实时触发下发流程&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;服务维度上：&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;
+&lt;p&gt;进程内队列化：按UID拆分队列，队列内串行处理，不需要加锁&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;压测确定瓶颈：提前压测，针对短板优化&lt;/p&gt;
+&lt;/li&gt;
+&lt;li&gt;
+&lt;p&gt;重大活动保障：独立部署服务，降级&lt;/p&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;五扩展到多直播间&#34;&gt;五、扩展到多直播间&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;热点直播间识别，热点直播间红包异步发放，小直播间红包可同步写DB&lt;/li&gt;
+&lt;li&gt;全局流控，DB写入并发过高时，转为异步发放&lt;/li&gt;
+&lt;li&gt;MQ消费监控、大盘监控&lt;/li&gt;
+&lt;li&gt;&amp;hellip;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h2 id=&#34;总结超高并发系统设计&#34;&gt;总结：超高并发系统设计&lt;/h2&gt;
+&lt;p&gt;高并发系统有着通用的技术手段&lt;/p&gt;
+&lt;p&gt;以读热点为例&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;加从库，读写分离&lt;/li&gt;
+&lt;li&gt;DB分库分表，横向扩展&lt;/li&gt;
+&lt;li&gt;增加缓存（缓存也可读写分离，但是一般不会读从库）&lt;/li&gt;
+&lt;li&gt;缓存进一步分片（Redis cluster）&lt;/li&gt;
+&lt;li&gt;拆分为多个key&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;此外，还可以使用&lt;/p&gt;
+&lt;ul&gt;
+&lt;li&gt;批量化：例如每次从Redis MGET、RPOP多个，最有效策略之一&lt;/li&gt;
+&lt;li&gt;内存聚合：短时间内大量的请求聚合为一次&lt;/li&gt;
+&lt;li&gt;本地缓存：最有效策略之一
+&lt;ul&gt;
+&lt;li&gt;网关一致性hash路由，一个UID请求固定打到单实例，进程可缓存状态&lt;/li&gt;
+&lt;/ul&gt;
+&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;针对写热点，转为写MQ，异步操作，将写队列化，控制并发是常见方案&lt;/p&gt;
+&lt;p&gt;写也可以批量化：insert时批量插入，update时批量更新等等&lt;/p&gt;
+&lt;p&gt;有时也可选择使用写性能更优的LSM Tree引擎，或者不用关系型数据库，直接使用KV存储&lt;/p&gt;
+</content>
+    </item>
+    
     <item>
       <title>关于第三方异步通知 &amp; 超时控制</title>
       <link>/posts/developer-notification/</link>
@@ -2231,180 +2405,6 @@ func getBuffer() *[]byte {
 &lt;p&gt;sync.Mutex有饥饿模式 ，饥饿模式下也不是先进先出吗？&lt;/p&gt;
 &lt;p&gt;怎样复现日志乱序的现象？&lt;/p&gt;
 &lt;p&gt;后续有时间再写篇博客分析&lt;/p&gt;
-</content>
-    </item>
-    
-    <item>
-      <title></title>
-      <link>/posts/high-concurrency-system-design/</link>
-      <pubDate>Mon, 01 Jan 0001 00:00:00 +0000</pubDate>
-      
-      <guid>/posts/high-concurrency-system-design/</guid>
-      <description>超高并发系统设计——直播红包 以直播红包场景为例，讨论超高并发系统设计的相关策略
-预设量级：
-直播间千万在线观众
-主播发红包，包100w个红包
-一、高并发抢红包 传统的做法，是使用DB乐观锁或悲观锁进行红包扣减
-以悲观锁为例：
-begin; select * from 红包表 where 红包id = xxx for update; if 余额 &amp;gt; 0 update 红包表 set 余额 = 余额 - 本次红包金额, 子红包id = 子红包id + 1 where ; commit; 拿到余额和子红包id后，写入用户红包表
-随着并发增高，红包扣减时DB的行锁竞争加剧，简单的解决方式是拆分为多行，再进一步可以分库分表
-不管怎样拆分，最终抢红包的高并发还是会直接打到DB，难以支撑超高并发
-优化1：预先拆分红包，不依赖行锁扣减 既然每次请求都去DB拆分红包难以支撑超高并发，那么可以预先拆好红包，每次抢红包取到一个子红包，写入DB
-发红包时预先拆分红包个数的子红包，写入Redis 的List结构 抢红包时，从Redis List取出子红包，写MySQL，子红包ID为唯一键 Redis由于数据存储在内存，性能较高，但是单实例也难以支撑千万QPS，因此，可使用cluster模式，拆分为多个Key
-Q：Redis主实例挂掉，POP操作未同步到从实例，从实例升级为主实例，同一个子红包POP多次，有无问题？
-A：子红包ID为唯一键，POP出来同步写入DB，即使同一个子红包POP多次，第二次的写入失败
-Q：用户红包表怎么分库分表？
-A：上述方案，需要按子红包ID分表；如果以UID分表，两个UID POP出同一个子红包，落到不同表里，唯一键不生效
-问题： 此时的瓶颈在于DB写入：insert虽然相较update不需要竞争行锁，但是需要进行唯一性校验，维护多个索引，同时B+树内部并发操作时也会有数据竞争，在高并发时，瞬时海量的insert可能会打垮DB
-优化2：引入MQ削峰，转为异步操作 优化1不再依赖DB进行红包扣减，而是预先拆分，从Redis取出子红包
-仍然会受限于DB高并发插入，引入MQ削峰是一个常见策略
-其余流程不变，POP出子红包后，同步写DB改为同步写MQ，写MQ成功后返回用户抢红包成功
-使用Redis取出库存，引入MQ削峰
-Redis拆分多个Key，MQ可以扩分区，二者几乎是无限的容量
-此时已经可以解决抢红包的超高并发
-问题： 异步写DB，DB的唯一键约束无法生效，会出现由于Redis新主节点重复POP子红包，导致同一个子红包下发给多个用户的问题 MQ如果宕机，丢失了消息，无法找回怎么办？ 优化3：保证一个子红包只取出一次 优化2中写MQ后异步写DB，会出现一个子红包下发给多个用户的问题。
-原因在于Redis主从切换后， List中的数据POP多次，那么，只需要保证一个子红包只取出一次即可</description>
-      <content>&lt;h1 id=&#34;超高并发系统设计直播红包&#34;&gt;超高并发系统设计——直播红包&lt;/h1&gt;
-&lt;p&gt;以直播红包场景为例，讨论超高并发系统设计的相关策略&lt;/p&gt;
-&lt;p&gt;预设量级：&lt;/p&gt;
-&lt;p&gt;直播间&lt;strong&gt;千万&lt;/strong&gt;在线观众&lt;/p&gt;
-&lt;p&gt;主播发红包，包&lt;strong&gt;100w&lt;/strong&gt;个红包&lt;/p&gt;
-&lt;h2 id=&#34;一高并发抢红包&#34;&gt;一、高并发抢红包&lt;/h2&gt;
-&lt;p&gt;传统的做法，是使用DB乐观锁或悲观锁进行红包扣减&lt;/p&gt;
-&lt;p&gt;以悲观锁为例：&lt;/p&gt;
-&lt;pre tabindex=&#34;0&#34;&gt;&lt;code&gt;begin;
-select * from 红包表 where 红包id = xxx for update;
-if 余额 &amp;gt; 0
-	update 红包表 set 余额 = 余额 - 本次红包金额, 子红包id = 子红包id + 1 where ;
-commit;
-&lt;/code&gt;&lt;/pre&gt;&lt;p&gt;拿到余额和子红包id后，写入用户红包表&lt;/p&gt;
-&lt;p&gt;随着并发增高，红包扣减时DB的&lt;strong&gt;行锁&lt;/strong&gt;竞争加剧，简单的解决方式是&lt;strong&gt;拆分为多行&lt;/strong&gt;，再进一步可以&lt;strong&gt;分库分表&lt;/strong&gt;&lt;/p&gt;
-&lt;p&gt;不管怎样拆分，最终抢红包的高并发还是会直接打到DB，难以支撑超高并发&lt;/p&gt;
-&lt;h3 id=&#34;优化1预先拆分红包不依赖行锁扣减&#34;&gt;优化1：预先拆分红包，不依赖行锁扣减&lt;/h3&gt;
-&lt;p&gt;既然每次请求都去DB拆分红包难以支撑超高并发，那么可以预先拆好红包，每次抢红包取到一个子红包，写入DB&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;发红包时预先拆分红包个数的子红包，写入Redis 的List结构&lt;/li&gt;
-&lt;li&gt;抢红包时，从Redis List取出子红包，写MySQL，子红包ID为唯一键&lt;/li&gt;
-&lt;/ul&gt;
-&lt;p&gt;Redis由于数据存储在内存，性能较高，但是单实例也难以支撑千万QPS，因此，可使用cluster模式，&lt;strong&gt;拆分为多个Key&lt;/strong&gt;&lt;/p&gt;
-&lt;p&gt;Q：Redis主实例挂掉，POP操作未同步到从实例，从实例升级为主实例，同一个子红包POP多次，有无问题？&lt;/p&gt;
-&lt;p&gt;A：子红包ID为唯一键，POP出来同步写入DB，即使同一个子红包POP多次，第二次的写入失败&lt;/p&gt;
-&lt;p&gt;Q：用户红包表怎么分库分表？&lt;/p&gt;
-&lt;p&gt;A：上述方案，需要按子红包ID分表；如果以UID分表，两个UID POP出同一个子红包，落到不同表里，唯一键不生效&lt;/p&gt;
-&lt;h4 id=&#34;问题&#34;&gt;问题：&lt;/h4&gt;
-&lt;p&gt;此时的瓶颈在于DB写入：insert虽然相较update不需要竞争行锁，但是需要进行唯一性校验，维护多个索引，同时B+树内部并发操作时也会有数据竞争，在高并发时，瞬时海量的insert可能会打垮DB&lt;/p&gt;
-&lt;h3 id=&#34;优化2引入mq削峰转为异步操作&#34;&gt;优化2：引入MQ削峰，转为异步操作&lt;/h3&gt;
-&lt;p&gt;优化1不再依赖DB进行红包扣减，而是预先拆分，从Redis取出子红包&lt;/p&gt;
-&lt;p&gt;仍然会受限于DB高并发插入，引入MQ削峰是一个常见策略&lt;/p&gt;
-&lt;p&gt;其余流程不变，POP出子红包后，同步写DB改为&lt;strong&gt;同步写MQ&lt;/strong&gt;，写MQ成功后返回用户抢红包成功&lt;/p&gt;
-&lt;p&gt;使用Redis取出库存，引入MQ削峰&lt;/p&gt;
-&lt;p&gt;Redis拆分多个Key，MQ可以扩分区，二者几乎是无限的容量&lt;/p&gt;
-&lt;p&gt;此时已经可以解决抢红包的超高并发&lt;/p&gt;
-&lt;h4 id=&#34;问题-1&#34;&gt;问题：&lt;/h4&gt;
-&lt;ol&gt;
-&lt;li&gt;异步写DB，DB的唯一键约束无法生效，会出现由于Redis新主节点重复POP子红包，导致同一个子红包下发给多个用户的问题&lt;/li&gt;
-&lt;li&gt;MQ如果宕机，丢失了消息，无法找回怎么办？&lt;/li&gt;
-&lt;/ol&gt;
-&lt;h3 id=&#34;优化3保证一个子红包只取出一次&#34;&gt;优化3：保证一个子红包只取出一次&lt;/h3&gt;
-&lt;p&gt;优化2中写MQ后异步写DB，会出现一个子红包下发给多个用户的问题。&lt;/p&gt;
-&lt;p&gt;原因在于Redis主从切换后， List中的数据POP多次，那么，只需要保证一个子红包只取出一次即可&lt;/p&gt;
-&lt;p&gt;可以使用DB批量扣减，每次取出100个子红包（update 红包库存 set 已用库存=已用库存+100），&lt;/p&gt;
-&lt;p&gt;DB的持久化可以保证只会取出一次，现在访问DB的次数缩减到1%，但DB还可能是一个性能瓶颈&lt;/p&gt;
-&lt;p&gt;可再次用Redis优化，不竞争行锁：把100w个红包，拆分为1w个小红包，写到Redis List中，仍然是POP出来，再写DB，使用唯一键确定所有权&lt;/p&gt;
-&lt;p&gt;此时，一个子红包只会取出一次，不再需要以子红包ID分表，用户红包表可以按UID拆分&lt;/p&gt;
-&lt;h2 id=&#34;二对账&#34;&gt;二、对账&lt;/h2&gt;
-&lt;p&gt;优化2里提到一个问题，MQ宕机，丢失消息怎么办？ 用户已经看到了抢红包成功的结果，但最终没收到红包是不可接受的&lt;/p&gt;
-&lt;p&gt;最直接的解决方案是让MQ也同步刷盘(Kafka log.flush.interval.messages参数)，但这样MQ的性能也会大大降低，成为一个性能瓶颈&lt;/p&gt;
-&lt;p&gt;一种可行策略是结合客户端对账：&lt;/p&gt;
-&lt;p&gt;用户抢到红包后，额外返回一个&lt;strong&gt;加密的token&lt;/strong&gt;，证明用户抢到了红包&lt;/p&gt;
-&lt;p&gt;客户端收到抢红包成功的结果后，先写入客户端本地DB，确保刷盘后，弹出抢红包成功的提示&lt;/p&gt;
-&lt;p&gt;后续可使用该token作为凭证，定时轮训红包下发状态&lt;/p&gt;
-&lt;p&gt;如果MQ宕机丢数据，可通过该token补发数据&lt;/p&gt;
-&lt;h2 id=&#34;三快速消费&#34;&gt;三、快速消费&lt;/h2&gt;
-&lt;p&gt;解决了抢红包的问题，剩下的就是快速消费消息，快速兑现红包&lt;/p&gt;
-&lt;p&gt;优化方式也比较多，例如：&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;生产消息时，按用户红包分表聚合，同一个红包分表的数据写入一个MQ分区&lt;/li&gt;
-&lt;li&gt;批量insert， INSERT INTO VALUES (红包1), (红包2)&amp;hellip;&lt;/li&gt;
-&lt;li&gt;消费时累计多个消息commit一次&lt;/li&gt;
-&lt;/ul&gt;
-&lt;p&gt;除此之外，由于有了兜底的客户端对账，可以调整DB参数(innodb_flush_log_at_commit, sync_binlog)，不需要同步刷盘（会出现一个uid写入多个子红包，最终交给支付系统做幂等）&lt;/p&gt;
-&lt;h3 id=&#34;uid并发抢红包的问题&#34;&gt;UID并发抢红包的问题&lt;/h3&gt;
-&lt;p&gt;上述讨论忽略了一个问题，如果没有做其他限制，同一个UID是能抢到多个红包的（暂不考虑黑产破解，直接调用接口的情况）&lt;/p&gt;
-&lt;p&gt;超高并发时，客户端应该保证：&lt;/p&gt;
-&lt;ol&gt;
-&lt;li&gt;不能并发发起抢红包请求&lt;/li&gt;
-&lt;li&gt;抢到一次红包后，按钮置灰，不会再次发起抢红包请求&lt;/li&gt;
-&lt;/ol&gt;
-&lt;p&gt;即使客户端做到这两点，也可能会重复请求：&lt;/p&gt;
-&lt;p&gt;例如第一次抢红包成功，接口超时，客户端再次抢红包，MQ中有一个UID有两条记录&lt;/p&gt;
-&lt;p&gt;再例如支持多设备登录，在多设备同时抢红包也无法限制&lt;/p&gt;
-&lt;p&gt;按照UID分表，UID上有唯一键，最终重复的请求会失败&lt;/p&gt;
-&lt;p&gt;这样红包的数量变少了，能够抢到红包的人数就少了&lt;/p&gt;
-&lt;p&gt;怎么解决呢？&lt;/p&gt;
-&lt;p&gt;容易想到分布式锁，SETNX&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;先判断未抢到过，然后POP子红包，再SETNX，最后写入MQ&lt;/li&gt;
-&lt;/ul&gt;
-&lt;p&gt;这样，如果写入MQ失败，用户再次抢红包，也会失败，实际未得到红包&lt;/p&gt;
-&lt;p&gt;修改一下，变成&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;先判断未抢到过，然后POP子红包，再写入MQ，最后SETNX&lt;/li&gt;
-&lt;/ul&gt;
-&lt;p&gt;并发的请求还是能写入两次，但是能拦住后续的请求（SETNX成功）&lt;/p&gt;
-&lt;p&gt;全部抢红包请求都至少增加了一次redis的判断，redis压力会上升。并且由于是多个系统，不再一个事务内，没有很强的一致性保证&lt;/p&gt;
-&lt;p&gt;还可以考虑换一种方式，将抢红包的请求按UID&lt;strong&gt;一致性hash到固定实例&lt;/strong&gt;，由实例内存去重&lt;/p&gt;
-&lt;p&gt;总之，不管怎样，很难保证在MQ消息中一个UID不会抢到多个子红包&lt;/p&gt;
-&lt;h2 id=&#34;四其他&#34;&gt;四、其他&lt;/h2&gt;
-&lt;p&gt;用户体验上：&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;批量取红包库存，库存100w，实际发放可能小于100w（代码层面也可再优化），产品展示策略上优化&lt;/li&gt;
-&lt;li&gt;抢到红包后，客户端就可以先在本地展示发放中的状态（此时可能还未写入用户红包表）&lt;/li&gt;
-&lt;li&gt;异步写DB，跨设备查看红包列表会出现不一致，待优化&lt;/li&gt;
-&lt;li&gt;用户进钱包查看余额时，如果红包未发放，实时触发下发流程&lt;/li&gt;
-&lt;/ul&gt;
-&lt;p&gt;服务维度上：&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;
-&lt;p&gt;进程内队列化：按UID拆分队列，队列内串行处理，不需要加锁&lt;/p&gt;
-&lt;/li&gt;
-&lt;li&gt;
-&lt;p&gt;压测确定瓶颈：提前压测，针对短板优化&lt;/p&gt;
-&lt;/li&gt;
-&lt;li&gt;
-&lt;p&gt;重大活动保障：独立部署服务，降级&lt;/p&gt;
-&lt;/li&gt;
-&lt;/ul&gt;
-&lt;h2 id=&#34;五扩展到多直播间&#34;&gt;五、扩展到多直播间&lt;/h2&gt;
-&lt;ul&gt;
-&lt;li&gt;热点直播间识别，热点直播间红包异步发放，小直播间红包可同步写DB&lt;/li&gt;
-&lt;li&gt;全局流控，DB写入并发过高时，转为异步发放&lt;/li&gt;
-&lt;li&gt;MQ消费监控、大盘监控&lt;/li&gt;
-&lt;li&gt;&amp;hellip;&lt;/li&gt;
-&lt;/ul&gt;
-&lt;h2 id=&#34;总结超高并发系统设计&#34;&gt;总结：超高并发系统设计&lt;/h2&gt;
-&lt;p&gt;高并发系统有着通用的技术手段&lt;/p&gt;
-&lt;p&gt;以读热点为例&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;加从库，读写分离&lt;/li&gt;
-&lt;li&gt;DB分库分表，横向扩展&lt;/li&gt;
-&lt;li&gt;增加缓存（缓存也可读写分离，但是一般不会读从库）&lt;/li&gt;
-&lt;li&gt;缓存进一步分片（Redis cluster）&lt;/li&gt;
-&lt;li&gt;拆分为多个key&lt;/li&gt;
-&lt;/ul&gt;
-&lt;p&gt;此外，还可以使用&lt;/p&gt;
-&lt;ul&gt;
-&lt;li&gt;批量化：例如每次从Redis MGET、RPOP多个，最有效策略之一&lt;/li&gt;
-&lt;li&gt;内存聚合：短时间内大量的请求聚合为一次&lt;/li&gt;
-&lt;li&gt;本地缓存：最有效策略之一
-&lt;ul&gt;
-&lt;li&gt;网关一致性hash路由，一个UID请求固定打到单实例，进程可缓存状态&lt;/li&gt;
-&lt;/ul&gt;
-&lt;/li&gt;
-&lt;/ul&gt;
-&lt;p&gt;针对写热点，转为写MQ，异步操作，将写队列化，控制并发是常见方案&lt;/p&gt;
-&lt;p&gt;写也可以批量化：insert时批量插入，update时批量更新等等&lt;/p&gt;
-&lt;p&gt;有时也可选择使用写性能更优的LSM Tree引擎，或者不用关系型数据库，直接使用KV存储&lt;/p&gt;
 </content>
     </item>
     
